@@ -1,0 +1,24 @@
+[1.966s] Invoking command in '/home/jeremy/drone_ws/build/takeoff_land': CONDA_PROMPT_MODIFIER=(base) PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/jeremy/drone_ws/build/takeoff_land/build --no-deps symlink_data --force
+[2.508s] running develop
+[2.835s] running egg_info
+[2.835s] writing takeoff_land.egg-info/PKG-INFO
+[2.836s] writing dependency_links to takeoff_land.egg-info/dependency_links.txt
+[2.836s] writing entry points to takeoff_land.egg-info/entry_points.txt
+[2.837s] writing requirements to takeoff_land.egg-info/requires.txt
+[2.837s] writing top-level names to takeoff_land.egg-info/top_level.txt
+[2.841s] reading manifest file 'takeoff_land.egg-info/SOURCES.txt'
+[2.843s] writing manifest file 'takeoff_land.egg-info/SOURCES.txt'
+[2.846s] running build_ext
+[2.847s] Creating /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff-land.egg-link (link to .)
+[2.849s] Installing hold_position_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[2.849s] Installing mode_monitor script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[2.849s] Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[2.849s] Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[2.850s] 
+[2.850s] Installed /home/jeremy/drone_ws/build/takeoff_land
+[2.850s] running symlink_data
+[2.850s] symbolically linking /home/jeremy/drone_ws/build/takeoff_land/resource/takeoff_land -> /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages
+[2.850s] symbolically linking /home/jeremy/drone_ws/build/takeoff_land/package.xml -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land
+[2.850s] symbolically linking /home/jeremy/drone_ws/build/takeoff_land/launch/mavros_only.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+[2.851s] symbolically linking /home/jeremy/drone_ws/build/takeoff_land/launch/takeoff_land.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+[2.938s] Invoked command in '/home/jeremy/drone_ws/build/takeoff_land' returned '0': CONDA_PROMPT_MODIFIER=(base) PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/jeremy/drone_ws/build/takeoff_land/build --no-deps symlink_data --force

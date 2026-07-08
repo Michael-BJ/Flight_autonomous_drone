@@ -1,0 +1,36 @@
+running egg_info
+writing ../../build/takeoff_land/takeoff_land.egg-info/PKG-INFO
+writing dependency_links to ../../build/takeoff_land/takeoff_land.egg-info/dependency_links.txt
+writing entry points to ../../build/takeoff_land/takeoff_land.egg-info/entry_points.txt
+writing requirements to ../../build/takeoff_land/takeoff_land.egg-info/requires.txt
+writing top-level names to ../../build/takeoff_land/takeoff_land.egg-info/top_level.txt
+reading manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+writing manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+copying takeoff_land/takeoff_land_node.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+copying takeoff_land/px4_sensor_reader.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+copying takeoff_land/__init__.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+running install
+running install_lib
+creating /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/takeoff_land_node.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/px4_sensor_reader.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/__init__.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/takeoff_land_node.py to takeoff_land_node.cpython-310.pyc
+byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/px4_sensor_reader.py to px4_sensor_reader.cpython-310.pyc
+byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/__init__.py to __init__.cpython-310.pyc
+running install_data
+copying resource/takeoff_land -> /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages
+creating /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land
+copying package.xml -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land
+creating /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+copying launch/mavros_only.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+copying launch/takeoff_land.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+running install_egg_info
+Copying ../../build/takeoff_land/takeoff_land.egg-info to /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land-0.1.0-py3.10.egg-info
+running install_scripts
+Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+writing list of installed files to '/home/jeremy/drone_ws/build/takeoff_land/install.log'

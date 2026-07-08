@@ -1,0 +1,269 @@
+========================================================================
+  USAGE GUIDE: takeoff_land package
+  Drone: PX4 via MAVROS | Platform: Jetson Orin Nano | ROS2 Humble
+========================================================================
+
+PREREQUISITES
+-------------
+- PX4 must have a valid LOCAL POSITION (GPS / VIO / optical-flow).
+  Without it, PX4 rejects OFFBOARD position control.
+- RC with KILL-SWITCH ready as emergency failsafe.
+- User must have serial port access:
+    sudo usermod -aG dialout $USER   # then logout/login
+
+------------------------------------------------------------------------
+STEP 0 — SOURCE WORKSPACE (required in every new terminal)
+------------------------------------------------------------------------
+
+  source /opt/ros/humble/setup.bash
+  source ~/drone_ws/install/setup.bash
+
+------------------------------------------------------------------------
+STEP 1 — BUILD PACKAGE
+------------------------------------------------------------------------
+
+  cd ~/drone_ws
+  colcon build --packages-select takeoff_land
+  source install/setup.bash
+
+------------------------------------------------------------------------
+METHOD A — ALL-IN-ONE LAUNCH (recommended for quick test)
+------------------------------------------------------------------------
+Starts MAVROS + px4_sensor_reader + takeoff_land_node together.
+Auto start order: MAVROS (t=0) -> reader (t=10s) -> mission (t=14s)
+
+  # Jetson UART (default):
+  ros2 launch takeoff_land takeoff_land.launch.py
+
+  # USB (e.g. Pixhawk via USB cable):
+  ros2 launch takeoff_land takeoff_land.launch.py \
+      fcu_url:=/dev/ttyACM0:57600
+
+  # Custom parameters:
+  ros2 launch takeoff_land takeoff_land.launch.py \
+      fcu_url:=/dev/ttyTHS1:921600 \
+      target_alt:=1.5 \
+      hover_time:=10.0 \
+      descent_speed:=0.2 \
+      auto_land_mode:=true \
+      max_pos_error:=2.0 \
+      max_vz:=2.0 \
+      max_alt_error:=1.5
+
+------------------------------------------------------------------------
+METHOD B — TWO TERMINALS (more flexible, restart mission without restarting MAVROS)
+------------------------------------------------------------------------
+
+  [Terminal 1] — MAVROS + sensor reader:
+  ros2 launch takeoff_land mavros_only.launch.py fcu_url:=/dev/ttyTHS1:921600
+
+  Wait until the log shows "MAVROS CONNECTED" before continuing.
+
+  [Terminal 2] — Run takeoff/land mission:
+  ros2 run takeoff_land takeoff_land_node
+
+  [Terminal 2] — With custom parameters:
+  ros2 run takeoff_land takeoff_land_node --ros-args \
+      -p target_alt:=1.5 \
+      -p hover_time:=10.0 \
+      -p descent_speed:=0.2 \
+      -p auto_land_mode:=true \
+      -p use_ekf_stable:=true \
+      -p cmd_hz:=50 \
+      -p max_pos_error:=2.0 \
+      -p max_vz:=2.0 \
+      -p max_alt_error:=1.5
+
+  [Terminal 2] — Sensor reader only (no mission):
+  ros2 run takeoff_land px4_sensor_reader
+
+  [Terminal 2] — Sensor reader with custom FCU:
+  ros2 run takeoff_land px4_sensor_reader --ros-args \
+      -p fcu_url:=/dev/ttyACM0:57600 \
+      -p auto_launch_mavros:=false
+
+------------------------------------------------------------------------
+METHOD C — SITL SIMULATION (no physical hardware)
+------------------------------------------------------------------------
+Reader will auto-fallback to UDP if no serial port is found.
+
+  [Terminal 1]:
+  ros2 launch takeoff_land mavros_only.launch.py \
+      fcu_url:=udp://:14540@127.0.0.1:14580
+
+  [Terminal 2]:
+  ros2 run takeoff_land takeoff_land_node --ros-args \
+      -p target_alt:=1.2 \
+      -p use_ekf_stable:=true
+
+------------------------------------------------------------------------
+PARAMETERS — takeoff_land_node
+------------------------------------------------------------------------
+
+  target_alt        float   1.2    Takeoff height in meters (above ground)
+  hover_time        float   8.0    Hover duration in seconds
+  cmd_hz            int     50     Setpoint publish frequency (Hz); min 2 Hz
+  descent_speed     float   0.3    Descent speed (m/s) during landing
+  land_handoff_alt  float   0.25   Height (m) before handing off to AUTO.LAND
+  auto_land_mode    bool    true   true = hand touchdown to PX4 AUTO.LAND
+  use_ekf_stable    bool    true   true = wait for EKF Z stability before takeoff
+  connect_timeout   float   60.0   Timeout waiting for MAVROS connection (sec)
+  arm_timeout       float   30.0   Timeout for ARM attempts (sec)
+
+  --- Sanity Check Limits (abort to AUTO.LAND if exceeded) ---
+  max_pos_error     float   2.0    Max horizontal drift from home position (m)
+  max_vz            float   3.0    Max vertical speed during hover/descent (m/s); not checked during takeoff
+  max_alt_error     float   1.5    Max altitude deviation from target during hover (m)
+
+------------------------------------------------------------------------
+PARAMETERS — px4_sensor_reader
+------------------------------------------------------------------------
+
+  fcu_url            string  auto   FCU URL: /dev/ttyTHS1:921600 or udp://...
+  auto_launch_mavros bool    true   true = spawn MAVROS if not already running
+                                    false = MAVROS managed by launch file (recommended)
+
+------------------------------------------------------------------------
+MONITORING — CHECK ROS2 TOPICS (separate terminal)
+------------------------------------------------------------------------
+
+  # FCU status (connected, armed, mode):
+  ros2 topic echo /px4/state
+
+  # Full sensor snapshot (position, GPS, IMU, battery):
+  ros2 topic echo /px4/sensors
+
+  # Setpoints sent to PX4:
+  ros2 topic echo /mavros/setpoint_raw/local
+
+  # MAVROS state directly:
+  ros2 topic echo /mavros/state
+
+  # List all active topics:
+  ros2 topic list
+
+  # Topic publish rate:
+  ros2 topic hz /px4/sensors
+
+------------------------------------------------------------------------
+FSM FLOW — takeoff_land_node
+------------------------------------------------------------------------
+
+  IDLE
+    -> Wait for MAVROS connection (from /px4/state)
+    -> Wait for valid local position (from /px4/sensors)
+    -> [EKF] Pre-wait 10s for GPS initial convergence
+    -> [EKF] Wait for Z std < 0.08m sustained for 5s -> lock ground_z
+    -> Lock home position (x, y, ground_z, yaw)
+    -> Warm up setpoint stream ~2 seconds
+  ARM
+    -> Send ARM command to PX4
+    -> Confirm armed=true
+  OFFBOARD
+    -> Set mode OFFBOARD
+  TAKEOFF
+    -> Setpoint rises to ground_z + target_alt
+    -> Sanity check active: pos drift + vz limit
+    -> Wait for stable altitude (tol 15 cm, 2 sec)
+  HOVER
+    -> Hold position for hover_time seconds
+    -> Sanity check active: pos drift + vz + altitude deviation
+    -> If any limit exceeded -> AUTO.LAND abort
+  LANDING
+    -> Controlled descent (descent_speed m/s)
+    -> Sanity check active: pos drift + vz limit
+    -> When altitude < land_handoff_alt: hand off to AUTO.LAND
+  DONE
+    -> Drone landed & disarmed
+
+------------------------------------------------------------------------
+SAFETY — SANITY CHECK (otomatis aktif selama terbang)
+------------------------------------------------------------------------
+
+Program secara otomatis memantau 3 kondisi berbahaya saat drone terbang:
+
+  1. POSISI HORIZONTAL (max_pos_error, default 2.0m)
+     Jika drone drift lebih dari 2m dari titik home -> abort ke AUTO.LAND
+     Penyebab umum: angin kencang, GPS jump, EKF error
+
+  2. KECEPATAN VERTIKAL (max_vz, default 2.0 m/s)
+     Jika vz lebih dari 2 m/s saat tidak sedang takeoff/landing -> abort
+     Penyebab umum: turbulensi, kehilangan lift mendadak, EKF diverge
+
+  3. DEVIASI KETINGGIAN SAAT HOVER (max_alt_error, default 1.5m)
+     Jika z berbeda lebih dari 1.5m dari target hover -> abort ke AUTO.LAND
+     Penyebab umum: GPS altitude jump, EKF drift tiba-tiba
+
+Log yang muncul saat sanity check abort:
+  [SANITY] ABORT: Horizontal drift 2.45m from home (limit 2.0m)
+  [SANITY] Switching to AUTO.LAND for safety.
+
+Jalankan dengan batas custom:
+  ros2 launch takeoff_land takeoff_land.launch.py \
+      fcu_url:=/dev/ttyACM0:57600 \
+      max_pos_error:=3.0 \
+      max_vz:=1.5 \
+      max_alt_error:=2.0
+
+------------------------------------------------------------------------
+SAFETY — RC OVERRIDE (WAJIB SEBELUM TERBANG)
+------------------------------------------------------------------------
+
+RC pilot bisa ambil alih kapan saja selama misi OFFBOARD dengan cara:
+  1. Gerakkan stick RC -> PX4 otomatis keluar dari OFFBOARD
+  2. Kode mendeteksi mode change -> setpoint BERHENTI -> RC punya kendali penuh
+
+LANGKAH SETUP DI QGroundControl (satu kali, tersimpan di PX4):
+  1. Buka QGroundControl -> Vehicle Setup -> Parameters
+  2. Cari: COM_RC_OVERRIDE
+  3. Set nilai: 2  (aktifkan RC override khusus saat OFFBOARD mode)
+     - 0 = tidak aktif
+     - 2 = aktif saat OFFBOARD  ← REKOMENDASI
+     - 3 = aktif saat OFFBOARD dan AUTO mode
+  4. Reboot PX4
+
+Parameter node (default sudah aman):
+  rc_override_enabled   bool  true   true = abort misi jika mode berubah tak terduga
+
+Jalankan dengan RC override dimatikan (hanya untuk debug):
+  ros2 run takeoff_land takeoff_land_node --ros-args \
+      -p rc_override_enabled:=false
+
+Log yang muncul saat RC mengambil alih:
+  [RC] MODE CHANGE DETECTED: OFFBOARD -> POSCTL
+  [RC] RC OVERRIDE — mission aborting. RC pilot has control.
+  [T/L] MISSION ABORTED — RC pilot has control.
+
+------------------------------------------------------------------------
+TROUBLESHOOTING
+------------------------------------------------------------------------
+
+  [PROBLEM] "Waiting for MAVROS connection..."
+  -> px4_sensor_reader not running or MAVROS not connected to PX4.
+     Check: ros2 topic list | grep mavros
+
+  [PROBLEM] Serial port: no data from PX4
+  -> Check PX4 is powered on.
+  -> Verify baud rate: try 57600 or 115200 if 921600 fails.
+  -> Verify wiring: TX (Jetson) -> RX (PX4), RX (Jetson) -> TX (PX4).
+  -> Check available ports: ls /dev/ttyTHS* /dev/ttyACM* /dev/ttyUSB*
+  -> Test raw serial: stty -F /dev/ttyTHS1 921600 raw && cat /dev/ttyTHS1 | xxd | head
+
+  [PROBLEM] "No local position"
+  -> PX4 has no GPS fix or VIO. Check:
+     ros2 topic echo /mavros/local_position/pose
+
+  [PROBLEM] Arming failed
+  -> Check RC kill-switch is not active.
+  -> Check PX4 mode in QGroundControl or:
+     ros2 topic echo /mavros/state
+
+  [PROBLEM] PX4 not entering OFFBOARD
+  -> Setpoints must flow > 2 Hz BEFORE setting OFFBOARD.
+     This node streams from startup; ensure no prior errors.
+
+  [PROBLEM] Serial port not detected
+  -> Check: ls /dev/ttyTHS* /dev/ttyACM* /dev/ttyUSB*
+  -> Check access: sudo chmod 666 /dev/ttyTHS1
+
+========================================================================

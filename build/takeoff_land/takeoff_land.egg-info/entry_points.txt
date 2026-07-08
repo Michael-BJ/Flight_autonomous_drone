@@ -1,0 +1,6 @@
+[console_scripts]
+hold_position_node = takeoff_land.hold_position_node:main
+mode_monitor = takeoff_land.mode_monitor:main
+px4_sensor_reader = takeoff_land.px4_sensor_reader:main
+takeoff_land_node = takeoff_land.takeoff_land_node:main
+

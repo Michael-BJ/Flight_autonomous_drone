@@ -1,0 +1,142 @@
+[0.311s] [34mcolcon[0m [1;30mDEBUG[0m [32mCommand line arguments: ['/usr/bin/colcon', 'build', '--symlink-install'][0m
+[0.312s] [34mcolcon[0m [1;30mDEBUG[0m [32mParsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='build', build_base='build', install_base='install', merge_install=False, symlink_install=True, test_result_base=None, continue_on_error=False, executor='parallel', parallel_workers=6, event_handlers=None, ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['.'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=None, packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, allow_overriding=[], cmake_args=None, cmake_target=None, cmake_target_skip_unavailable=False, cmake_clean_cache=False, cmake_clean_first=False, cmake_force_configure=False, ament_cmake_args=None, catkin_cmake_args=None, catkin_skip_building_tests=False, verb_parser=<colcon_defaults.argument_parser.defaults.DefaultArgumentsDecorator object at 0xffffbc30b5b0>, verb_extension=<colcon_core.verb.build.BuildVerb object at 0xffffbc2c0220>, main=<bound method BuildVerb.main of <colcon_core.verb.build.BuildVerb object at 0xffffbc2c0220>>)[0m
+[0.819s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(colcon_meta) check parameters
+[0.820s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) check parameters
+[0.820s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) check parameters
+[0.820s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) check parameters
+[0.820s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(colcon_meta) discover
+[0.820s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) discover
+[0.820s] [34mcolcon.colcon_core.package_discovery[0m [1;30mINFO[0m Crawling recursively for packages in '/home/jeremy/drone_ws'
+[0.820s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['ignore', 'ignore_ament_install']
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ignore'
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ignore_ament_install'
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['colcon_pkg']
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'colcon_pkg'
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['colcon_meta']
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'colcon_meta'
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['ros']
+[0.821s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'ros'
+[0.854s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['cmake', 'python']
+[0.855s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'cmake'
+[0.855s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'python'
+[0.855s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extensions ['python_setup_py']
+[0.855s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(.) by extension 'python_setup_py'
+[0.855s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(build) by extensions ['ignore', 'ignore_ament_install']
+[0.856s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(build) by extension 'ignore'
+[0.856s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(build) ignored
+[0.856s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(install) by extensions ['ignore', 'ignore_ament_install']
+[0.856s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(install) by extension 'ignore'
+[0.856s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(install) ignored
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(log) by extensions ['ignore', 'ignore_ament_install']
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(log) by extension 'ignore'
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(log) ignored
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extensions ['ignore', 'ignore_ament_install']
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'ignore'
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'ignore_ament_install'
+[0.857s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extensions ['colcon_pkg']
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'colcon_pkg'
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extensions ['colcon_meta']
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'colcon_meta'
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extensions ['ros']
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'ros'
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extensions ['cmake', 'python']
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'cmake'
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'python'
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extensions ['python_setup_py']
+[0.858s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src) by extension 'python_setup_py'
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/log) by extensions ['ignore', 'ignore_ament_install']
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/log) by extension 'ignore'
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/log) ignored
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extensions ['ignore', 'ignore_ament_install']
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extension 'ignore'
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extension 'ignore_ament_install'
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extensions ['colcon_pkg']
+[0.859s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extension 'colcon_pkg'
+[0.860s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extensions ['colcon_meta']
+[0.860s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extension 'colcon_meta'
+[0.860s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extensions ['ros']
+[0.860s] [34mcolcon.colcon_core.package_identification[0m [1;30mLevel 1[0m _identify(src/takeoff_land) by extension 'ros'
+[0.868s] [34mcolcon.colcon_core.package_identification[0m [1;30mDEBUG[0m [32mPackage 'src/takeoff_land' with type 'ros.ament_python' and name 'takeoff_land'[0m
+[0.869s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(recursive) using defaults
+[0.869s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) discover
+[0.869s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(ignore) using defaults
+[0.869s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) discover
+[0.869s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(path) using defaults
+[0.945s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(prefix_path) check parameters
+[0.945s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(prefix_path) discover
+[0.951s] [34mcolcon.colcon_installed_package_information.package_discovery[0m [1;30mDEBUG[0m [32mFound 1 installed packages in /home/jeremy/px_com_jetson/install[0m
+[0.952s] [34mcolcon.colcon_installed_package_information.package_discovery[0m [1;30mDEBUG[0m [32mFound 1 installed packages in /home/jeremy/drone_com_02/install[0m
+[0.954s] [34mcolcon.colcon_installed_package_information.package_discovery[0m [1;30mDEBUG[0m [32mFound 280 installed packages in /opt/ros/humble[0m
+[0.957s] [34mcolcon.colcon_core.package_discovery[0m [1;30mLevel 1[0m discover_packages(prefix_path) using defaults
+[1.029s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'cmake_args' from command line to 'None'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'cmake_target' from command line to 'None'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'cmake_target_skip_unavailable' from command line to 'False'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'cmake_clean_cache' from command line to 'False'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'cmake_clean_first' from command line to 'False'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'cmake_force_configure' from command line to 'False'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'ament_cmake_args' from command line to 'None'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'catkin_cmake_args' from command line to 'None'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mLevel 5[0m set package 'takeoff_land' build argument 'catkin_skip_building_tests' from command line to 'False'
+[1.030s] [34mcolcon.colcon_core.verb[0m [1;30mDEBUG[0m [32mBuilding package 'takeoff_land' with the following arguments: {'ament_cmake_args': None, 'build_base': '/home/jeremy/drone_ws/build/takeoff_land', 'catkin_cmake_args': None, 'catkin_skip_building_tests': False, 'cmake_args': None, 'cmake_clean_cache': False, 'cmake_clean_first': False, 'cmake_force_configure': False, 'cmake_target': None, 'cmake_target_skip_unavailable': False, 'install_base': '/home/jeremy/drone_ws/install/takeoff_land', 'merge_install': False, 'path': '/home/jeremy/drone_ws/src/takeoff_land', 'symlink_install': True, 'test_result_base': None}[0m
+[1.030s] [34mcolcon.colcon_core.executor[0m [1;30mINFO[0m Executing jobs using 'parallel' executor
+[1.033s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mrun_until_complete[0m
+[1.033s] [34mcolcon.colcon_ros.task.ament_python.build[0m [1;30mINFO[0m Building ROS package in '/home/jeremy/drone_ws/src/takeoff_land' with build type 'ament_python'
+[1.033s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('takeoff_land', 'ament_prefix_path')
+[1.040s] [34mcolcon.colcon_core.plugin_system[0m [1;30mINFO[0m Skipping extension 'colcon_core.shell.bat': Not used on non-Windows systems
+[1.040s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/hook/ament_prefix_path.ps1'
+[1.042s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/hook/ament_prefix_path.dsv'
+[1.044s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/hook/ament_prefix_path.sh'
+[1.047s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[1.047s] [34mcolcon.colcon_core.shell[0m [1;30mDEBUG[0m [32mSkip shell extension 'dsv' for command environment[0m
+[1.561s] [34mcolcon.colcon_core.task.python.build[0m [1;30mINFO[0m Building Python package in '/home/jeremy/drone_ws/src/takeoff_land'
+[1.562s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Skip shell extension 'powershell' for command environment: Not usable outside of PowerShell
+[1.562s] [34mcolcon.colcon_core.shell[0m [1;30mDEBUG[0m [32mSkip shell extension 'dsv' for command environment[0m
+[2.350s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mAvailable setuptools commands: install_data, install_egg_info, alias, test, easy_install, setopt, bdist, check, upload_docs, build_scripts, upload, bdist_egg, sdist, clean, install_lib, symlink_data, install_headers, bdist_rpm, saveopts, install, build_py, build_ext, dist_info, build_clib, develop, build, bdist_dumb, register, bdist_wheel, install_scripts, egg_info, rotate[0m
+[2.992s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mAvailable setuptools 'develop' options: --site-dirs, --uninstall, --dry-run, --local-snapshots-ok, --force-installation-into-system-dir, --multi-version, --install-layout, --exclude-scripts, --always-unzip, --find-links, --no-user-cfg, --no-deps, --build-directory, --zip-ok, --version, --install-dir, --verbose, --script-dir, --index-url, --record, --prefix, --quiet, --allow-hosts, --user, --help, --upgrade, --no-find-links, --optimize, --egg-path, --editable, --always-copy[0m
+[2.995s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages/takeoff_land[0m
+[2.995s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/package.xml[0m
+[2.996s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch/mavros_only.launch.py[0m
+[2.996s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch/takeoff_land.launch.py[0m
+[2.996s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land/hold_position_node[0m
+[2.996s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land/mode_monitor[0m
+[2.996s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land/px4_sensor_reader[0m
+[2.996s] [34mcolcon.colcon_core.task.python.build[0m [1;30mDEBUG[0m [32mWhile undoing a previous installation files outside the Python library path are being ignored: /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land/takeoff_land_node[0m
+[2.999s] [34mcolcon.colcon_core.event_handler.log_command[0m [1;30mDEBUG[0m [32mInvoking command in '/home/jeremy/drone_ws/build/takeoff_land': CONDA_PROMPT_MODIFIER=(base) PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/jeremy/drone_ws/build/takeoff_land/build --no-deps symlink_data --force[0m
+[3.968s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('takeoff_land', 'pythonpath_develop')
+[3.970s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/jeremy/drone_ws/build/takeoff_land/share/takeoff_land/hook/pythonpath_develop.ps1'
+[3.972s] [34mcolcon.colcon_core.event_handler.log_command[0m [1;30mDEBUG[0m [32mInvoked command in '/home/jeremy/drone_ws/build/takeoff_land' returned '0': CONDA_PROMPT_MODIFIER=(base) PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/jeremy/drone_ws/build/takeoff_land/build --no-deps symlink_data --force[0m
+[3.974s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '/home/jeremy/drone_ws/build/takeoff_land/share/takeoff_land/hook/pythonpath_develop.dsv'
+[3.975s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/jeremy/drone_ws/build/takeoff_land/share/takeoff_land/hook/pythonpath_develop.sh'
+[3.987s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land' for CMake module files
+[3.988s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land' for CMake config files
+[3.989s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land/lib'
+[3.990s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land/bin'
+[3.990s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land/lib/pkgconfig/takeoff_land.pc'
+[3.990s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages'
+[3.991s] [34mcolcon.colcon_core.shell[0m [1;30mLevel 1[0m create_environment_hook('takeoff_land', 'pythonpath')
+[3.991s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/hook/pythonpath.ps1'
+[3.992s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment descriptor '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/hook/pythonpath.dsv'
+[3.993s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating environment hook '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/hook/pythonpath.sh'
+[3.995s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m checking '/home/jeremy/drone_ws/install/takeoff_land/bin'
+[3.995s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m create_environment_scripts_only(takeoff_land)
+[3.996s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/package.ps1'
+[3.999s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package descriptor '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/package.dsv'
+[4.001s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/package.sh'
+[4.004s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/package.bash'
+[4.007s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating package script '/home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/package.zsh'
+[4.009s] [34mcolcon.colcon_core.environment[0m [1;30mLevel 1[0m create_file_with_runtime_dependencies(/home/jeremy/drone_ws/install/takeoff_land/share/colcon-core/packages/takeoff_land)
+[4.010s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mclosing loop[0m
+[4.010s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mloop closed[0m
+[4.012s] [34mcolcon.colcon_parallel_executor.executor.parallel[0m [1;30mDEBUG[0m [32mrun_until_complete finished with '0'[0m
+[4.013s] [34mcolcon.colcon_core.event_reactor[0m [1;30mDEBUG[0m [32mjoining thread[0m
+[4.013s] [34mcolcon.colcon_core.event_reactor[0m [1;30mDEBUG[0m [32mjoined thread[0m
+[4.014s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/jeremy/drone_ws/install/local_setup.ps1'
+[4.018s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix util module '/home/jeremy/drone_ws/install/_local_setup_util_ps1.py'
+[4.022s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/jeremy/drone_ws/install/setup.ps1'
+[4.026s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/jeremy/drone_ws/install/local_setup.sh'
+[4.029s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix util module '/home/jeremy/drone_ws/install/_local_setup_util_sh.py'
+[4.030s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/jeremy/drone_ws/install/setup.sh'
+[4.034s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/jeremy/drone_ws/install/local_setup.bash'
+[4.036s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/jeremy/drone_ws/install/setup.bash'
+[4.039s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix script '/home/jeremy/drone_ws/install/local_setup.zsh'
+[4.041s] [34mcolcon.colcon_core.shell[0m [1;30mINFO[0m Creating prefix chain script '/home/jeremy/drone_ws/install/setup.zsh'

@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: takeoff-land
+Version: 0.1.0
+Summary: Minimal OFFBOARD takeoff & landing for PX4 via MAVROS.
+Home-page: UNKNOWN
+Maintainer: michael
+Maintainer-email: michaelbryanjahanto@gmail.com
+License: TODO: License declaration
+Platform: UNKNOWN
+Provides-Extra: test
+
+UNKNOWN
+

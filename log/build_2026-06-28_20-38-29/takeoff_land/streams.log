@@ -1,0 +1,30 @@
+[1.184s] Invoking command in '/home/jeremy/drone_ws/src/takeoff_land': PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/takeoff_land build --build-base /home/jeremy/drone_ws/build/takeoff_land/build install --record /home/jeremy/drone_ws/build/takeoff_land/install.log --install-scripts $base/lib/takeoff_land --single-version-externally-managed install_data
+[1.642s] running egg_info
+[1.643s] writing ../../build/takeoff_land/takeoff_land.egg-info/PKG-INFO
+[1.644s] writing dependency_links to ../../build/takeoff_land/takeoff_land.egg-info/dependency_links.txt
+[1.644s] writing entry points to ../../build/takeoff_land/takeoff_land.egg-info/entry_points.txt
+[1.644s] writing requirements to ../../build/takeoff_land/takeoff_land.egg-info/requires.txt
+[1.644s] writing top-level names to ../../build/takeoff_land/takeoff_land.egg-info/top_level.txt
+[1.648s] reading manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+[1.652s] writing manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+[1.652s] running build
+[1.652s] running build_py
+[1.653s] copying takeoff_land/mode_monitor.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+[1.653s] copying takeoff_land/hold_position_node.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+[1.654s] running install
+[1.654s] running install_lib
+[1.656s] copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/mode_monitor.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+[1.656s] copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/hold_position_node.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+[1.657s] byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/mode_monitor.py to mode_monitor.cpython-310.pyc
+[1.660s] byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/hold_position_node.py to hold_position_node.cpython-310.pyc
+[1.663s] running install_data
+[1.664s] running install_egg_info
+[1.667s] removing '/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land-0.1.0-py3.10.egg-info' (and everything under it)
+[1.668s] Copying ../../build/takeoff_land/takeoff_land.egg-info to /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land-0.1.0-py3.10.egg-info
+[1.669s] running install_scripts
+[1.707s] Installing hold_position_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[1.707s] Installing mode_monitor script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[1.707s] Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[1.708s] Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[1.708s] writing list of installed files to '/home/jeremy/drone_ws/build/takeoff_land/install.log'
+[1.776s] Invoked command in '/home/jeremy/drone_ws/src/takeoff_land' returned '0': PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/takeoff_land build --build-base /home/jeremy/drone_ws/build/takeoff_land/build install --record /home/jeremy/drone_ws/build/takeoff_land/install.log --install-scripts $base/lib/takeoff_land --single-version-externally-managed install_data

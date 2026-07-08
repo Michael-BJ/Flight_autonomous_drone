@@ -1,0 +1,58 @@
+[0.000000] (-) TimerEvent: {}
+[0.000816] (takeoff_land) JobQueued: {'identifier': 'takeoff_land', 'dependencies': OrderedDict()}
+[0.001636] (takeoff_land) JobStarted: {'identifier': 'takeoff_land'}
+[0.099887] (-) TimerEvent: {}
+[0.200476] (-) TimerEvent: {}
+[0.301049] (-) TimerEvent: {}
+[0.401618] (-) TimerEvent: {}
+[0.502225] (-) TimerEvent: {}
+[0.602922] (-) TimerEvent: {}
+[0.703547] (-) TimerEvent: {}
+[0.804182] (-) TimerEvent: {}
+[0.904814] (-) TimerEvent: {}
+[1.005457] (-) TimerEvent: {}
+[1.108856] (-) TimerEvent: {}
+[1.209520] (-) TimerEvent: {}
+[1.310198] (-) TimerEvent: {}
+[1.410892] (-) TimerEvent: {}
+[1.511493] (-) TimerEvent: {}
+[1.613685] (-) TimerEvent: {}
+[1.714269] (-) TimerEvent: {}
+[1.814882] (-) TimerEvent: {}
+[1.915524] (-) TimerEvent: {}
+[1.966069] (takeoff_land) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'develop', '--editable', '--build-directory', '/home/jeremy/drone_ws/build/takeoff_land/build', '--no-deps', 'symlink_data', '--force'], 'cwd': '/home/jeremy/drone_ws/build/takeoff_land', 'env': {'LESSOPEN': '| /usr/bin/lesspipe %s', 'CONDA_PROMPT_MODIFIER': '(base)', 'USER': 'jeremy', 'SSH_CLIENT': '192.168.0.49 38292 22', 'XDG_SESSION_TYPE': 'tty', 'GIT_ASKPASS': '/home/jeremy/.vscode-server/cli/servers/Stable-4fe60c8b1cdac1c4c174f2fb180d0d758272d713/server/extensions/git/dist/askpass.sh', 'SHLVL': '2', 'LD_LIBRARY_PATH': '/usr/local/cuda-12.6/lib64:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/local/cuda-12.6/lib64:', 'BROWSER': '/home/jeremy/.vscode-server/cli/servers/Stable-4fe60c8b1cdac1c4c174f2fb180d0d758272d713/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/jeremy', 'CONDA_SHLVL': '1', 'OLDPWD': '/home/jeremy/.vscode-server', 'TERM_PROGRAM_VERSION': '1.127.0', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-40050605-f03d-4e7a-a9b2-6cbe2c4060d7.sock', 'JETSON_L4T': '36.4.7', 'ROS_PYTHON_VERSION': '3', 'JETSON_MODEL': 'NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super', 'VSCODE_GIT_ASKPASS_MAIN': '/home/jeremy/.vscode-server/cli/servers/Stable-4fe60c8b1cdac1c4c174f2fb180d0d758272d713/server/extensions/git/dist/askpass-main.js', 'VSCODE_GIT_ASKPASS_NODE': '/home/jeremy/.vscode-server/cli/servers/Stable-4fe60c8b1cdac1c4c174f2fb180d0d758272d713/server/node', 'VSCODE_PYTHON_AUTOACTIVATE_GUARD': '1', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'COLORTERM': 'truecolor', '_CE_M': '', '_CONDA_ROOT': '/home/jeremy/miniconda3', 'COLCON_PREFIX_PATH': '/home/jeremy/px_com_jetson/install:/home/jeremy/drone_com_02/install', 'ROS_DISTRO': 'humble', 'LOGNAME': 'jeremy', 'JETSON_MODULE': 'NVIDIA Jetson Orin Nano (Developer kit)', 'JETSON_SERIAL_NUMBER': '1422125011591', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'CLAUDE_CODE_SSE_PORT': '46052', 'XDG_SESSION_CLASS': 'user', 'TERM': 'xterm-256color', 'XDG_SESSION_ID': '2', '_CE_CONDA': '', 'ROS_LOCALHOST_ONLY': '0', 'PATH': '/usr/local/cuda-12.6/bin:/home/jeremy/.vscode-server/data/User/globalStorage/github.copilot-chat/debugCommand:/home/jeremy/.vscode-server/data/User/globalStorage/github.copilot-chat/copilotCli:/home/jeremy/.vscode-server/cli/servers/Stable-4fe60c8b1cdac1c4c174f2fb180d0d758272d713/server/bin/remote-cli:/home/jeremy/.local/bin:/opt/ros/humble/bin:/home/jeremy/miniconda3/bin:/home/jeremy/miniconda3/condabin:/usr/local/cuda-12.6/bin:/home/jeremy/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'XDG_RUNTIME_DIR': '/run/user/1000', 'LANG': 'en_US.UTF-8', 'LS_COLORS': 'rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc=01;31:*.arj=01;31:*.taz=01;31:*.lha=01;31:*.lz4=01;31:*.lzh=01;31:*.lzma=01;31:*.tlz=01;31:*.txz=01;31:*.tzo=01;31:*.t7z=01;31:*.zip=01;31:*.z=01;31:*.dz=01;31:*.gz=01;31:*.lrz=01;31:*.lz=01;31:*.lzo=01;31:*.xz=01;31:*.zst=01;31:*.tzst=01;31:*.bz2=01;31:*.bz=01;31:*.tbz=01;31:*.tbz2=01;31:*.tz=01;31:*.deb=01;31:*.rpm=01;31:*.jar=01;31:*.war=01;31:*.ear=01;31:*.sar=01;31:*.rar=01;31:*.alz=01;31:*.ace=01;31:*.zoo=01;31:*.cpio=01;31:*.7z=01;31:*.rz=01;31:*.cab=01;31:*.wim=01;31:*.swm=01;31:*.dwm=01;31:*.esd=01;31:*.jpg=01;35:*.jpeg=01;35:*.mjpg=01;35:*.mjpeg=01;35:*.gif=01;35:*.bmp=01;35:*.pbm=01;35:*.pgm=01;35:*.ppm=01;35:*.tga=01;35:*.xbm=01;35:*.xpm=01;35:*.tif=01;35:*.tiff=01;35:*.png=01;35:*.svg=01;35:*.svgz=01;35:*.mng=01;35:*.pcx=01;35:*.mov=01;35:*.mpg=01;35:*.mpeg=01;35:*.m2v=01;35:*.mkv=01;35:*.webm=01;35:*.webp=01;35:*.ogm=01;35:*.mp4=01;35:*.m4v=01;35:*.mp4v=01;35:*.vob=01;35:*.qt=01;35:*.nuv=01;35:*.wmv=01;35:*.asf=01;35:*.rm=01;35:*.rmvb=01;35:*.flc=01;35:*.avi=01;35:*.fli=01;35:*.flv=01;35:*.gl=01;35:*.dl=01;35:*.xcf=01;35:*.xwd=01;35:*.yuv=01;35:*.cgm=01;35:*.emf=01;35:*.ogv=01;35:*.ogx=01;35:*.aac=00;36:*.au=00;36:*.flac=00;36:*.m4a=00;36:*.mid=00;36:*.midi=00;36:*.mka=00;36:*.mp3=00;36:*.mpc=00;36:*.ogg=00;36:*.ra=00;36:*.wav=00;36:*.oga=00;36:*.opus=00;36:*.spx=00;36:*.xspf=00;36:', 'JETSON_SOC': 'tegra234', 'VSCODE_GIT_IPC_HANDLE': '/run/user/1000/vscode-git-2d57e28017.sock', 'TERM_PROGRAM': 'vscode', 'AMENT_PREFIX_PATH': '/home/jeremy/px_com_jetson/install/com_px_to_jetson:/home/jeremy/drone_com_02/install/drone_controller:/opt/ros/humble', 'CONDA_PYTHON_EXE': '/home/jeremy/miniconda3/bin/python', 'SHELL': '/bin/bash', 'LESSCLOSE': '/usr/bin/lesspipe %s %s', 'CONDA_DEFAULT_ENV': 'base', '_CONDA_EXE': '/home/jeremy/miniconda3/bin/conda', 'VSCODE_GIT_ASKPASS_EXTRA_ARGS': '', 'JETSON_CUDA_ARCH_BIN': '8.7', 'PWD': '/home/jeremy/drone_ws/build/takeoff_land', 'LC_ALL': 'en_US.UTF-8', 'COPILOT_DEBUG_NONCE': '3ae50c9a5a2aaeda706dfe25ccb96c5d', 'CONDA_EXE': '/home/jeremy/miniconda3/bin/conda', 'SSH_CONNECTION': '192.168.0.49 38292 192.168.0.150 22', 'XDG_DATA_DIRS': '/usr/share/gnome:/usr/local/share:/usr/share:/var/lib/snapd/desktop', 'PYTHONPATH': '/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:/home/jeremy/px_com_jetson/build/com_px_to_jetson:/home/jeremy/px_com_jetson/install/com_px_to_jetson/lib/python3.10/site-packages:/home/jeremy/drone_com_02/build/drone_controller:/home/jeremy/drone_com_02/install/drone_controller/lib/python3.10/site-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'CONDA_PREFIX': '/home/jeremy/miniconda3', 'COLCON': '1', 'JETSON_JETPACK': '', 'JETSON_P_NUMBER': 'p3767-0005'}, 'shell': False}
+[2.015692] (-) TimerEvent: {}
+[2.116300] (-) TimerEvent: {}
+[2.216942] (-) TimerEvent: {}
+[2.318294] (-) TimerEvent: {}
+[2.418895] (-) TimerEvent: {}
+[2.509448] (takeoff_land) StdoutLine: {'line': b'running develop\n'}
+[2.519031] (-) TimerEvent: {}
+[2.620234] (-) TimerEvent: {}
+[2.720884] (-) TimerEvent: {}
+[2.821494] (-) TimerEvent: {}
+[2.836703] (takeoff_land) StdoutLine: {'line': b'running egg_info\n'}
+[2.837197] (takeoff_land) StdoutLine: {'line': b'writing takeoff_land.egg-info/PKG-INFO\n'}
+[2.837802] (takeoff_land) StdoutLine: {'line': b'writing dependency_links to takeoff_land.egg-info/dependency_links.txt\n'}
+[2.838223] (takeoff_land) StdoutLine: {'line': b'writing entry points to takeoff_land.egg-info/entry_points.txt\n'}
+[2.838472] (takeoff_land) StdoutLine: {'line': b'writing requirements to takeoff_land.egg-info/requires.txt\n'}
+[2.838654] (takeoff_land) StdoutLine: {'line': b'writing top-level names to takeoff_land.egg-info/top_level.txt\n'}
+[2.842839] (takeoff_land) StdoutLine: {'line': b"reading manifest file 'takeoff_land.egg-info/SOURCES.txt'\n"}
+[2.844923] (takeoff_land) StdoutLine: {'line': b"writing manifest file 'takeoff_land.egg-info/SOURCES.txt'\n"}
+[2.847901] (takeoff_land) StdoutLine: {'line': b'running build_ext\n'}
+[2.848277] (takeoff_land) StdoutLine: {'line': b'Creating /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff-land.egg-link (link to .)\n'}
+[2.850245] (takeoff_land) StdoutLine: {'line': b'Installing hold_position_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land\n'}
+[2.850533] (takeoff_land) StdoutLine: {'line': b'Installing mode_monitor script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land\n'}
+[2.850693] (takeoff_land) StdoutLine: {'line': b'Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land\n'}
+[2.850923] (takeoff_land) StdoutLine: {'line': b'Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land\n'}
+[2.851324] (takeoff_land) StdoutLine: {'line': b'\n'}
+[2.851511] (takeoff_land) StdoutLine: {'line': b'Installed /home/jeremy/drone_ws/build/takeoff_land\n'}
+[2.851654] (takeoff_land) StdoutLine: {'line': b'running symlink_data\n'}
+[2.851821] (takeoff_land) StdoutLine: {'line': b'symbolically linking /home/jeremy/drone_ws/build/takeoff_land/resource/takeoff_land -> /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages\n'}
+[2.852048] (takeoff_land) StdoutLine: {'line': b'symbolically linking /home/jeremy/drone_ws/build/takeoff_land/package.xml -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land\n'}
+[2.852262] (takeoff_land) StdoutLine: {'line': b'symbolically linking /home/jeremy/drone_ws/build/takeoff_land/launch/mavros_only.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch\n'}
+[2.852477] (takeoff_land) StdoutLine: {'line': b'symbolically linking /home/jeremy/drone_ws/build/takeoff_land/launch/takeoff_land.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch\n'}
+[2.921660] (-) TimerEvent: {}
+[2.936985] (takeoff_land) CommandEnded: {'returncode': 0}
+[2.978305] (takeoff_land) JobEnded: {'identifier': 'takeoff_land', 'rc': 0}
+[2.981370] (-) EventReactorShutdown: {}

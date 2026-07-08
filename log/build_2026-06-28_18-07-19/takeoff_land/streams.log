@@ -1,0 +1,46 @@
+[1.120s] Invoking command in '/home/jeremy/drone_ws/src/takeoff_land': PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/takeoff_land build --build-base /home/jeremy/drone_ws/build/takeoff_land/build install --record /home/jeremy/drone_ws/build/takeoff_land/install.log --install-scripts $base/lib/takeoff_land --single-version-externally-managed install_data
+[1.558s] running egg_info
+[1.559s] creating ../../build/takeoff_land/takeoff_land.egg-info
+[1.559s] writing ../../build/takeoff_land/takeoff_land.egg-info/PKG-INFO
+[1.560s] writing dependency_links to ../../build/takeoff_land/takeoff_land.egg-info/dependency_links.txt
+[1.560s] writing entry points to ../../build/takeoff_land/takeoff_land.egg-info/entry_points.txt
+[1.561s] writing requirements to ../../build/takeoff_land/takeoff_land.egg-info/requires.txt
+[1.561s] writing top-level names to ../../build/takeoff_land/takeoff_land.egg-info/top_level.txt
+[1.561s] writing manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+[1.563s] reading manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+[1.567s] writing manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'
+[1.567s] running build
+[1.567s] running build_py
+[1.567s] creating /home/jeremy/drone_ws/build/takeoff_land/build
+[1.567s] creating /home/jeremy/drone_ws/build/takeoff_land/build/lib
+[1.568s] creating /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+[1.568s] copying takeoff_land/takeoff_land_node.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+[1.568s] copying takeoff_land/px4_sensor_reader.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+[1.568s] copying takeoff_land/__init__.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land
+[1.568s] running install
+[1.569s] running install_lib
+[1.570s] creating /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+[1.570s] copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/takeoff_land_node.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+[1.571s] copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/px4_sensor_reader.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+[1.571s] copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/__init__.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land
+[1.572s] byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/takeoff_land_node.py to takeoff_land_node.cpython-310.pyc
+[1.577s] byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/px4_sensor_reader.py to px4_sensor_reader.cpython-310.pyc
+[1.580s] byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/__init__.py to __init__.cpython-310.pyc
+[1.581s] running install_data
+[1.581s] creating /home/jeremy/drone_ws/install/takeoff_land/share
+[1.581s] creating /home/jeremy/drone_ws/install/takeoff_land/share/ament_index
+[1.582s] creating /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index
+[1.582s] creating /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages
+[1.582s] copying resource/takeoff_land -> /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages
+[1.582s] creating /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land
+[1.582s] copying package.xml -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land
+[1.582s] creating /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+[1.582s] copying launch/mavros_only.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+[1.583s] copying launch/takeoff_land.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+[1.583s] running install_egg_info
+[1.586s] Copying ../../build/takeoff_land/takeoff_land.egg-info to /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land-0.1.0-py3.10.egg-info
+[1.587s] running install_scripts
+[1.622s] Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[1.623s] Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+[1.623s] writing list of installed files to '/home/jeremy/drone_ws/build/takeoff_land/install.log'
+[1.684s] Invoked command in '/home/jeremy/drone_ws/src/takeoff_land' returned '0': PYTHONPATH=/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/takeoff_land build --build-base /home/jeremy/drone_ws/build/takeoff_land/build install --record /home/jeremy/drone_ws/build/takeoff_land/install.log --install-scripts $base/lib/takeoff_land --single-version-externally-managed install_data

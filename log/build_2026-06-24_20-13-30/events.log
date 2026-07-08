@@ -1,0 +1,61 @@
+[0.000000] (-) TimerEvent: {}
+[0.000295] (drone_pkg) JobQueued: {'identifier': 'drone_pkg', 'dependencies': OrderedDict()}
+[0.001021] (drone_pkg) JobStarted: {'identifier': 'drone_pkg'}
+[0.099304] (-) TimerEvent: {}
+[0.199696] (-) TimerEvent: {}
+[0.300127] (-) TimerEvent: {}
+[0.400542] (-) TimerEvent: {}
+[0.501333] (-) TimerEvent: {}
+[0.602247] (-) TimerEvent: {}
+[0.702614] (-) TimerEvent: {}
+[0.802976] (-) TimerEvent: {}
+[0.903400] (-) TimerEvent: {}
+[1.003950] (-) TimerEvent: {}
+[1.104380] (-) TimerEvent: {}
+[1.204805] (-) TimerEvent: {}
+[1.305239] (-) TimerEvent: {}
+[1.405695] (-) TimerEvent: {}
+[1.506097] (-) TimerEvent: {}
+[1.606443] (-) TimerEvent: {}
+[1.706807] (-) TimerEvent: {}
+[1.807170] (-) TimerEvent: {}
+[1.907509] (-) TimerEvent: {}
+[2.007895] (-) TimerEvent: {}
+[2.054991] (drone_pkg) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'develop', '--editable', '--build-directory', '/home/jeremy/drone_ws/build/drone_pkg/build', '--no-deps', 'symlink_data'], 'cwd': '/home/jeremy/drone_ws/build/drone_pkg', 'env': {'LESSOPEN': '| /usr/bin/lesspipe %s', 'VSCODE_CWD': '/home/jeremy', 'VSCODE_ESM_ENTRYPOINT': 'vs/workbench/api/node/extensionHostProcess', 'CONDA_PROMPT_MODIFIER': '(base)', 'AI_AGENT': 'claude-code_2-1-187_agent', 'USER': 'jeremy', 'SSH_CLIENT': '192.168.0.49 40574 22', 'CLAUDE_CODE_ENTRYPOINT': 'claude-vscode', 'VSCODE_NLS_CONFIG': '{"userLocale":"en","osLocale":"en","resolvedLanguage":"en","defaultMessagesFile":"/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/out/nls.messages.json","locale":"en","availableLanguages":{}}', 'GIT_EDITOR': 'true', 'VSCODE_HANDLES_UNCAUGHT_ERRORS': 'true', 'XDG_SESSION_TYPE': 'tty', 'CLAUDE_AGENT_SDK_VERSION': '0.3.187', 'SHLVL': '2', 'LD_LIBRARY_PATH': '/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib:/usr/local/cuda-12.6/lib64:', 'BROWSER': '/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/jeremy', 'CONDA_SHLVL': '1', 'GIT_CONFIG_COUNT': '1', 'OLDPWD': '/home/jeremy/drone_ws/src', 'VSCODE_RECONNECTION_GRACE_TIME': '10800000', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-19d637dd-bddb-4da6-a943-a6be94ac5fa1.sock', 'JETSON_L4T': '36.4.7', 'ROS_PYTHON_VERSION': '3', 'JETSON_MODEL': 'NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super', 'CLAUDE_CODE_CHILD_SESSION': '1', 'COPILOT_OTEL_FILE_EXPORTER_PATH': '/dev/null', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', '_CE_M': '', '_CONDA_ROOT': '/home/jeremy/miniconda3', 'COLCON_PREFIX_PATH': '/home/jeremy/px_com_jetson/install:/home/jeremy/drone_com_02/install', 'APPLICATION_INSIGHTS_NO_STATSBEAT': 'true', 'ROS_DISTRO': 'humble', 'LOGNAME': 'jeremy', 'JETSON_MODULE': 'NVIDIA Jetson Orin Nano (Developer kit)', 'JETSON_SERIAL_NUMBER': '1422125011591', 'VSCODE_HANDLES_SIGPIPE': 'true', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'XDG_SESSION_CLASS': 'user', 'XDG_SESSION_ID': '6', 'VSCODE_CLI_REQUIRE_TOKEN': '19460752-27d3-4474-aad5-3076ae751ecd', '_CE_CONDA': '', 'ROS_LOCALHOST_ONLY': '0', 'GIT_CONFIG_VALUE_0': 'explicit', 'MCP_CONNECTION_NONBLOCKING': 'true', 'PATH': '/home/jeremy/.local/bin:/usr/local/cuda-12.6/bin:/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/bin/remote-cli:/home/jeremy/.local/bin:/opt/ros/humble/bin:/home/jeremy/miniconda3/bin:/home/jeremy/miniconda3/condabin:/usr/local/cuda-12.6/bin:/home/jeremy/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'VSCODE_AGENT_FOLDER': '/home/jeremy/.vscode-server', 'COREPACK_ENABLE_AUTO_PIN': '0', 'XDG_RUNTIME_DIR': '/run/user/1000', 'CLAUDE_EFFORT': 'high', 'NoDefaultCurrentDirectoryInExePath': '1', 'LANG': 'en_US.UTF-8', 'LS_COLORS': '', 'JETSON_SOC': 'tegra234', 'AMENT_PREFIX_PATH': '/home/jeremy/px_com_jetson/install/com_px_to_jetson:/home/jeremy/drone_com_02/install/drone_controller:/opt/ros/humble', 'CONDA_PYTHON_EXE': '/home/jeremy/miniconda3/bin/python', 'SHELL': '/bin/bash', 'MXC_BIN_DIR': '/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/node_modules/@microsoft/mxc-sdk/bin', 'ELECTRON_RUN_AS_NODE': '1', 'GIT_CONFIG_KEY_0': 'safe.bareRepository', 'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING': 'true', 'CLAUDE_CODE_SESSION_ID': 'b2daae42-4b0b-4bbf-854d-db6853904ac5', 'LESSCLOSE': '/usr/bin/lesspipe %s %s', 'CONDA_DEFAULT_ENV': 'base', 'CLAUDECODE': '1', '_CONDA_EXE': '/home/jeremy/miniconda3/bin/conda', 'JETSON_CUDA_ARCH_BIN': '8.7', 'PWD': '/home/jeremy/drone_ws/build/drone_pkg', 'LC_ALL': 'en_US.UTF-8', 'CONDA_EXE': '/home/jeremy/miniconda3/bin/conda', 'SSH_CONNECTION': '192.168.0.49 40574 192.168.0.150 22', 'XDG_DATA_DIRS': '/usr/share/gnome:/usr/local/share:/usr/share:/var/lib/snapd/desktop', 'CLAUDE_CODE_EXECPATH': '/home/jeremy/.vscode-server/extensions/anthropic.claude-code-2.1.187-linux-arm64/resources/native-binary/claude', 'PYTHONPATH': '/home/jeremy/drone_ws/build/drone_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/drone_pkg/lib/python3.10/site-packages:/home/jeremy/px_com_jetson/build/com_px_to_jetson:/home/jeremy/px_com_jetson/install/com_px_to_jetson/lib/python3.10/site-packages:/home/jeremy/drone_com_02/build/drone_controller:/home/jeremy/drone_com_02/install/drone_controller/lib/python3.10/site-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'CLAUDE_CODE_ENABLE_TASKS': '0', 'CONDA_PREFIX': '/home/jeremy/miniconda3', 'COLCON': '1', 'JETSON_JETPACK': '', 'JETSON_P_NUMBER': 'p3767-0005'}, 'shell': False}
+[2.108045] (-) TimerEvent: {}
+[2.208408] (-) TimerEvent: {}
+[2.308769] (-) TimerEvent: {}
+[2.409129] (-) TimerEvent: {}
+[2.509504] (-) TimerEvent: {}
+[2.585773] (drone_pkg) StdoutLine: {'line': b'running develop\n'}
+[2.609676] (-) TimerEvent: {}
+[2.710037] (-) TimerEvent: {}
+[2.810407] (-) TimerEvent: {}
+[2.910763] (-) TimerEvent: {}
+[2.915331] (drone_pkg) StdoutLine: {'line': b'running egg_info\n'}
+[2.915682] (drone_pkg) StdoutLine: {'line': b'creating drone_pkg.egg-info\n'}
+[2.916140] (drone_pkg) StdoutLine: {'line': b'writing drone_pkg.egg-info/PKG-INFO\n'}
+[2.916496] (drone_pkg) StdoutLine: {'line': b'writing dependency_links to drone_pkg.egg-info/dependency_links.txt\n'}
+[2.916760] (drone_pkg) StdoutLine: {'line': b'writing entry points to drone_pkg.egg-info/entry_points.txt\n'}
+[2.916991] (drone_pkg) StdoutLine: {'line': b'writing requirements to drone_pkg.egg-info/requires.txt\n'}
+[2.917207] (drone_pkg) StdoutLine: {'line': b'writing top-level names to drone_pkg.egg-info/top_level.txt\n'}
+[2.917638] (drone_pkg) StdoutLine: {'line': b"writing manifest file 'drone_pkg.egg-info/SOURCES.txt'\n"}
+[2.921355] (drone_pkg) StdoutLine: {'line': b"reading manifest file 'drone_pkg.egg-info/SOURCES.txt'\n"}
+[2.922328] (drone_pkg) StdoutLine: {'line': b"writing manifest file 'drone_pkg.egg-info/SOURCES.txt'\n"}
+[2.925786] (drone_pkg) StdoutLine: {'line': b'running build_ext\n'}
+[2.926084] (drone_pkg) StdoutLine: {'line': b'Creating /home/jeremy/drone_ws/install/drone_pkg/lib/python3.10/site-packages/drone-pkg.egg-link (link to .)\n'}
+[2.927917] (drone_pkg) StdoutLine: {'line': b'Installing drone_controller script to /home/jeremy/drone_ws/install/drone_pkg/lib/drone_pkg\n'}
+[2.928310] (drone_pkg) StdoutLine: {'line': b'Installing drone_telemetry script to /home/jeremy/drone_ws/install/drone_pkg/lib/drone_pkg\n'}
+[2.928558] (drone_pkg) StdoutLine: {'line': b'Installing mission_planner script to /home/jeremy/drone_ws/install/drone_pkg/lib/drone_pkg\n'}
+[2.929023] (drone_pkg) StdoutLine: {'line': b'\n'}
+[2.929404] (drone_pkg) StdoutLine: {'line': b'Installed /home/jeremy/drone_ws/build/drone_pkg\n'}
+[2.929611] (drone_pkg) StdoutLine: {'line': b'running symlink_data\n'}
+[2.929800] (drone_pkg) StdoutLine: {'line': b'creating /home/jeremy/drone_ws/install/drone_pkg/share/ament_index\n'}
+[2.929929] (drone_pkg) StdoutLine: {'line': b'creating /home/jeremy/drone_ws/install/drone_pkg/share/ament_index/resource_index\n'}
+[2.930028] (drone_pkg) StdoutLine: {'line': b'creating /home/jeremy/drone_ws/install/drone_pkg/share/ament_index/resource_index/packages\n'}
+[2.930124] (drone_pkg) StdoutLine: {'line': b'symbolically linking /home/jeremy/drone_ws/build/drone_pkg/resource/drone_pkg -> /home/jeremy/drone_ws/install/drone_pkg/share/ament_index/resource_index/packages\n'}
+[2.930224] (drone_pkg) StdoutLine: {'line': b'symbolically linking /home/jeremy/drone_ws/build/drone_pkg/package.xml -> /home/jeremy/drone_ws/install/drone_pkg/share/drone_pkg\n'}
+[3.010933] (-) TimerEvent: {}
+[3.019985] (drone_pkg) CommandEnded: {'returncode': 0}
+[3.068413] (drone_pkg) JobEnded: {'identifier': 'drone_pkg', 'rc': 0}
+[3.069770] (-) EventReactorShutdown: {}

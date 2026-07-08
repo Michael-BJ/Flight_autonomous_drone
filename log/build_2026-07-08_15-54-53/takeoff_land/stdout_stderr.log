@@ -1,0 +1,22 @@
+running develop
+running egg_info
+writing takeoff_land.egg-info/PKG-INFO
+writing dependency_links to takeoff_land.egg-info/dependency_links.txt
+writing entry points to takeoff_land.egg-info/entry_points.txt
+writing requirements to takeoff_land.egg-info/requires.txt
+writing top-level names to takeoff_land.egg-info/top_level.txt
+reading manifest file 'takeoff_land.egg-info/SOURCES.txt'
+writing manifest file 'takeoff_land.egg-info/SOURCES.txt'
+running build_ext
+Creating /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff-land.egg-link (link to .)
+Installing hold_position_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+Installing mode_monitor script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land
+
+Installed /home/jeremy/drone_ws/build/takeoff_land
+running symlink_data
+symbolically linking /home/jeremy/drone_ws/build/takeoff_land/resource/takeoff_land -> /home/jeremy/drone_ws/install/takeoff_land/share/ament_index/resource_index/packages
+symbolically linking /home/jeremy/drone_ws/build/takeoff_land/package.xml -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land
+symbolically linking /home/jeremy/drone_ws/build/takeoff_land/launch/mavros_only.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch
+symbolically linking /home/jeremy/drone_ws/build/takeoff_land/launch/takeoff_land.launch.py -> /home/jeremy/drone_ws/install/takeoff_land/share/takeoff_land/launch

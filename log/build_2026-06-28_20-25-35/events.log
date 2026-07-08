@@ -1,0 +1,48 @@
+[0.000000] (-) TimerEvent: {}
+[0.000340] (takeoff_land) JobQueued: {'identifier': 'takeoff_land', 'dependencies': OrderedDict()}
+[0.000806] (takeoff_land) JobStarted: {'identifier': 'takeoff_land'}
+[0.099115] (-) TimerEvent: {}
+[0.199447] (-) TimerEvent: {}
+[0.299791] (-) TimerEvent: {}
+[0.400124] (-) TimerEvent: {}
+[0.500471] (-) TimerEvent: {}
+[0.600823] (-) TimerEvent: {}
+[0.701183] (-) TimerEvent: {}
+[0.801522] (-) TimerEvent: {}
+[0.901850] (-) TimerEvent: {}
+[1.002183] (-) TimerEvent: {}
+[1.102531] (-) TimerEvent: {}
+[1.180192] (takeoff_land) Command: {'cmd': ['/usr/bin/python3', '-W', 'ignore:setup.py install is deprecated', '-W', 'ignore:easy_install command is deprecated', 'setup.py', 'egg_info', '--egg-base', '../../build/takeoff_land', 'build', '--build-base', '/home/jeremy/drone_ws/build/takeoff_land/build', 'install', '--record', '/home/jeremy/drone_ws/build/takeoff_land/install.log', '--install-scripts', '$base/lib/takeoff_land', '--single-version-externally-managed', 'install_data'], 'cwd': '/home/jeremy/drone_ws/src/takeoff_land', 'env': {'VSCODE_CWD': '/home/jeremy', 'VSCODE_ESM_ENTRYPOINT': 'vs/workbench/api/node/extensionHostProcess', 'AI_AGENT': 'claude-code_2-1-195_agent', 'USER': 'jeremy', 'SSH_CLIENT': '192.168.0.49 58920 22', 'CLAUDE_CODE_ENTRYPOINT': 'claude-vscode', 'VSCODE_NLS_CONFIG': '{"userLocale":"en","osLocale":"en","resolvedLanguage":"en","defaultMessagesFile":"/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/out/nls.messages.json","locale":"en","availableLanguages":{}}', 'GIT_EDITOR': 'true', 'VSCODE_HANDLES_UNCAUGHT_ERRORS': 'true', 'XDG_SESSION_TYPE': 'tty', 'CLAUDE_AGENT_SDK_VERSION': '0.3.195', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib', 'BROWSER': '/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/bin/helpers/browser.sh', 'MOTD_SHOWN': 'pam', 'HOME': '/home/jeremy', 'GIT_CONFIG_COUNT': '1', 'OLDPWD': '/home/jeremy/drone_ws/src', 'VSCODE_RECONNECTION_GRACE_TIME': '10800000', 'VSCODE_IPC_HOOK_CLI': '/run/user/1000/vscode-ipc-59eef6a8-a61f-4f7e-89f7-4bc1e81db682.sock', 'JETSON_L4T': '36.4.7', 'ROS_PYTHON_VERSION': '3', 'JETSON_MODEL': 'NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super', 'CLAUDE_CODE_CHILD_SESSION': '1', 'COPILOT_OTEL_FILE_EXPORTER_PATH': '/dev/null', 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/1000/bus', 'APPLICATION_INSIGHTS_NO_STATSBEAT': 'true', 'ROS_DISTRO': 'humble', 'LOGNAME': 'jeremy', 'JETSON_MODULE': 'NVIDIA Jetson Orin Nano (Developer kit)', 'JETSON_SERIAL_NUMBER': '1422125011591', 'VSCODE_HANDLES_SIGPIPE': 'true', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'XDG_SESSION_CLASS': 'user', 'XDG_SESSION_ID': '4', 'VSCODE_CLI_REQUIRE_TOKEN': 'c24408f2-9313-4c60-89c6-2974893369b7', 'ROS_LOCALHOST_ONLY': '0', 'GIT_CONFIG_VALUE_0': 'explicit', 'MCP_CONNECTION_NONBLOCKING': 'true', 'PATH': '/home/jeremy/.local/bin:/opt/ros/humble/bin:/home/jeremy/miniconda3/bin:/home/jeremy/miniconda3/condabin:/usr/local/cuda-12.6/bin:/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/bin/remote-cli:/home/jeremy/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin', 'VSCODE_AGENT_FOLDER': '/home/jeremy/.vscode-server', 'COREPACK_ENABLE_AUTO_PIN': '0', 'XDG_RUNTIME_DIR': '/run/user/1000', 'CLAUDE_EFFORT': 'high', 'NoDefaultCurrentDirectoryInExePath': '1', 'LANG': 'en_US.UTF-8', 'JETSON_SOC': 'tegra234', 'AMENT_PREFIX_PATH': '/opt/ros/humble', 'SHELL': '/bin/bash', 'MXC_BIN_DIR': '/home/jeremy/.vscode-server/cli/servers/Stable-fcf604774b9f2674b473065736ee75077e256353/server/node_modules/@microsoft/mxc-sdk/bin', 'ELECTRON_RUN_AS_NODE': '1', 'GIT_CONFIG_KEY_0': 'safe.bareRepository', 'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING': 'true', 'CLAUDE_CODE_SESSION_ID': 'd72e9ebb-eae5-4361-a807-4f5af6d4175e', 'CLAUDECODE': '1', 'JETSON_CUDA_ARCH_BIN': '8.7', 'PWD': '/home/jeremy/drone_ws/build/takeoff_land', 'LC_ALL': 'en_US.UTF-8', 'SSH_CONNECTION': '192.168.0.49 58920 192.168.0.150 22', 'XDG_DATA_DIRS': '/usr/share/gnome:/usr/local/share:/usr/share:/var/lib/snapd/desktop', 'CLAUDE_CODE_EXECPATH': '/home/jeremy/.vscode-server/extensions/anthropic.claude-code-2.1.195-linux-arm64/resources/native-binary/claude', 'PYTHONPATH': '/home/jeremy/drone_ws/build/takeoff_land/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages:/opt/ros/humble/lib/python3.10/site-packages:/opt/ros/humble/local/lib/python3.10/dist-packages', 'CLAUDE_CODE_ENABLE_TASKS': '0', 'COLCON': '1', 'JETSON_JETPACK': '', 'JETSON_P_NUMBER': 'p3767-0005'}, 'shell': False}
+[1.202686] (-) TimerEvent: {}
+[1.303077] (-) TimerEvent: {}
+[1.403487] (-) TimerEvent: {}
+[1.503925] (-) TimerEvent: {}
+[1.604346] (-) TimerEvent: {}
+[1.656307] (takeoff_land) StdoutLine: {'line': b'running egg_info\n'}
+[1.657333] (takeoff_land) StdoutLine: {'line': b'writing ../../build/takeoff_land/takeoff_land.egg-info/PKG-INFO\n'}
+[1.657949] (takeoff_land) StdoutLine: {'line': b'writing dependency_links to ../../build/takeoff_land/takeoff_land.egg-info/dependency_links.txt\n'}
+[1.658669] (takeoff_land) StdoutLine: {'line': b'writing entry points to ../../build/takeoff_land/takeoff_land.egg-info/entry_points.txt\n'}
+[1.659106] (takeoff_land) StdoutLine: {'line': b'writing requirements to ../../build/takeoff_land/takeoff_land.egg-info/requires.txt\n'}
+[1.659383] (takeoff_land) StdoutLine: {'line': b'writing top-level names to ../../build/takeoff_land/takeoff_land.egg-info/top_level.txt\n'}
+[1.662240] (takeoff_land) StdoutLine: {'line': b"reading manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'\n"}
+[1.666228] (takeoff_land) StdoutLine: {'line': b"writing manifest file '../../build/takeoff_land/takeoff_land.egg-info/SOURCES.txt'\n"}
+[1.667028] (takeoff_land) StdoutLine: {'line': b'running build\n'}
+[1.667324] (takeoff_land) StdoutLine: {'line': b'running build_py\n'}
+[1.667807] (takeoff_land) StdoutLine: {'line': b'copying takeoff_land/takeoff_land_node.py -> /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land\n'}
+[1.668065] (takeoff_land) StdoutLine: {'line': b'running install\n'}
+[1.668479] (takeoff_land) StdoutLine: {'line': b'running install_lib\n'}
+[1.669585] (takeoff_land) StdoutLine: {'line': b'copying /home/jeremy/drone_ws/build/takeoff_land/build/lib/takeoff_land/takeoff_land_node.py -> /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land\n'}
+[1.670907] (takeoff_land) StdoutLine: {'line': b'byte-compiling /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land/takeoff_land_node.py to takeoff_land_node.cpython-310.pyc\n'}
+[1.676562] (takeoff_land) StdoutLine: {'line': b'running install_data\n'}
+[1.677053] (takeoff_land) StdoutLine: {'line': b'running install_egg_info\n'}
+[1.680861] (takeoff_land) StdoutLine: {'line': b"removing '/home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land-0.1.0-py3.10.egg-info' (and everything under it)\n"}
+[1.681467] (takeoff_land) StdoutLine: {'line': b'Copying ../../build/takeoff_land/takeoff_land.egg-info to /home/jeremy/drone_ws/install/takeoff_land/lib/python3.10/site-packages/takeoff_land-0.1.0-py3.10.egg-info\n'}
+[1.683344] (takeoff_land) StdoutLine: {'line': b'running install_scripts\n'}
+[1.704495] (-) TimerEvent: {}
+[1.720442] (takeoff_land) StdoutLine: {'line': b'Installing px4_sensor_reader script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land\n'}
+[1.721146] (takeoff_land) StdoutLine: {'line': b'Installing takeoff_land_node script to /home/jeremy/drone_ws/install/takeoff_land/lib/takeoff_land\n'}
+[1.721593] (takeoff_land) StdoutLine: {'line': b"writing list of installed files to '/home/jeremy/drone_ws/build/takeoff_land/install.log'\n"}
+[1.787453] (takeoff_land) CommandEnded: {'returncode': 0}
+[1.806394] (-) TimerEvent: {}
+[1.845493] (takeoff_land) JobEnded: {'identifier': 'takeoff_land', 'rc': 0}
+[1.849031] (-) EventReactorShutdown: {}
