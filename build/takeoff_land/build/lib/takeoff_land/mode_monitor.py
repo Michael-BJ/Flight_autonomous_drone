@@ -137,7 +137,7 @@ class ModeMonitor(Node):
             bc = GREEN if self._bat_pct > 40 else (YELLOW if self._bat_pct > 20 else RED)
             bat_s = f"  BAT:{bc}{self._bat_pct:.0f}%{RESET}"
 
-        gps_c = GREEN if "FIX" in self._gps_fix else RED
+        gps_c = GREEN if self._gps_fix in ("FIX", "SBAS", "GBAS") else RED
         gps_s = f"{gps_c}{self._gps_fix}{RESET}" if self._gps_fix else f"{RED}NO GPS{RESET}"
 
         print(

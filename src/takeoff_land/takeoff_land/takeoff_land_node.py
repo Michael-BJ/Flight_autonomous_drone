@@ -22,6 +22,23 @@ RC OVERRIDE SAFETY:
     PX4 must have COM_RC_OVERRIDE=2 set (via QGroundControl) to actually let
     RC sticks switch the mode.
 
+NEW (2026-07-08) — mode-switch safety hardening. All additions below are
+tagged with "NEW" comments inline so they're easy to find/review:
+    1. _publish_setpoint() now also stops the instant _rc_override or
+       _link_lost is set, instead of only reacting once the mission-thread
+       polling loop notices and flips _stream_on off (closed a small window
+       where stale setpoints could still be published after an override was
+       already detected).
+    2. FCU/MAVROS link loss during an active mission is now detected
+       (_link_lost flag, set in _cb_state) and aborts the mission via the
+       new _link_lost_abort(), mirroring the existing RC-override path.
+       Previously a dropped link during HOVER/LANDING was not handled at all.
+    3. run_sequence() now verifies PX4's COM_RC_OVERRIDE parameter
+       (_check_rc_override_param()) before a mission is allowed to start.
+       Without that param set to 2 or 3 on the flight controller, RC sticks
+       cannot physically switch out of OFFBOARD — the detection logic above
+       would never fire no matter what this code does.
+
 FSM FLOW:
     IDLE -> (connect) -> (EKF stable -> ground_z) -> (warm-up stream)
          -> ARM -> OFFBOARD -> TAKEOFF (ground_z+target_alt) -> HOVER
@@ -38,7 +55,9 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from mavros_msgs.msg import PositionTarget
-from mavros_msgs.srv import CommandBool, SetMode
+from mavros_msgs.srv import CommandBool, ParamGet, ParamPull, SetMode  # NEW: param srvs for COM_RC_OVERRIDE check
+from rcl_interfaces.msg import ParameterType  # NEW: mavros2 mirrors FCU params as ROS params
+from rcl_interfaces.srv import GetParameters  # NEW
 from std_msgs.msg import String
 
 
@@ -64,7 +83,8 @@ class TakeoffLandNode(Node):
         self.declare_parameter("land_handoff_alt",   0.25)   # m above ground -> AUTO.LAND
         self.declare_parameter("auto_land_mode",     True)
         self.declare_parameter("rc_override_enabled", True)  # abort if RC takes over
-        self.declare_parameter("max_pos_error",      2.0)   # m — max horizontal drift from home
+        self.declare_parameter("verify_rc_override_param", True)  # NEW: verify PX4 COM_RC_OVERRIDE before flying
+        self.declare_parameter("max_pos_error",      1.0)   # m — max horizontal drift from home
         self.declare_parameter("max_vz",             3.0)   # m/s — max vz during hover/descent
         self.declare_parameter("max_alt_error",      1.5)   # m — max altitude deviation during hover
 
@@ -78,6 +98,7 @@ class TakeoffLandNode(Node):
         self._land_handoff    = float(self.get_parameter("land_handoff_alt").value)
         self._auto_land       = bool(self.get_parameter("auto_land_mode").value)
         self._rc_override_en  = bool(self.get_parameter("rc_override_enabled").value)
+        self._verify_rc_param = bool(self.get_parameter("verify_rc_override_param").value)  # NEW
         self._max_pos_error   = float(self.get_parameter("max_pos_error").value)
         self._max_vz          = float(self.get_parameter("max_vz").value)
         self._max_alt_error   = float(self.get_parameter("max_alt_error").value)
@@ -97,6 +118,8 @@ class TakeoffLandNode(Node):
         self._in_offboard_mission = False
         # Set to True the moment an unexpected mode change is detected.
         self._rc_override         = False
+        # NEW: Set to True the moment the FCU/MAVROS link drops during a mission.
+        self._link_lost           = False
 
         # ── Streaming setpoint ─────────────────────────────────────────────────
         self._sp_lock   = threading.Lock()
@@ -142,9 +165,19 @@ class TakeoffLandNode(Node):
         try:
             d = json.loads(msg.data)
             prev_mode       = self._mode
+            prev_connected  = self._connected  # NEW
             self._connected = d.get("connected", False)
             self._armed     = d.get("armed",     False)
             self._mode      = d.get("mode",      "")
+
+            # NEW: FCU/MAVROS link-loss detection during an active mission.
+            # If telemetry drops while we're supposed to be commanding the
+            # vehicle, we no longer know its real mode — stop touching it and
+            # let PX4's own failsafe (data-link-loss / RC-loss) take over.
+            if self._in_offboard_mission and prev_connected and not self._connected:
+                self._link_lost = True
+                self.get_logger().error(
+                    "[LINK] FCU DISCONNECTED during active mission!")
 
             # RC override detection: unexpected mode change while we are flying.
             # "AUTO.LAND" is excluded because we set it ourselves during landing.
@@ -183,7 +216,11 @@ class TakeoffLandNode(Node):
     # ── Setpoint streaming (timer) ────────────────────────────────────────────
     def _publish_setpoint(self):
         """Stream position setpoint at cmd_hz. Stops when _stream_on=False."""
-        if not self._stream_on:
+        # NEW: also stop the instant RC override or link-loss is detected,
+        # instead of waiting for the mission thread's polling loop to notice
+        # and flip _stream_on off (previously up to ~0.1s of stale setpoints
+        # could still go out after the override was already known about).
+        if not self._stream_on or self._rc_override or self._link_lost:
             return
         msg = PositionTarget()
         msg.header.stamp     = self.get_clock().now().to_msg()
@@ -296,6 +333,106 @@ class TakeoffLandNode(Node):
         self.get_logger().error("=" * 62)
         self._safe_shutdown()
 
+    # ── NEW: FCU link-loss abort ──────────────────────────────────────────────
+    def _link_lost_abort(self):
+        """NEW: Stop all setpoints immediately when the FCU/telemetry link
+        drops during an active mission. Mirrors _rc_override_abort(), but for
+        a lost connection instead of a detected mode change — we don't know
+        the vehicle's real mode once telemetry is gone, so the safest move is
+        to stop commanding it and let PX4's own failsafe take over."""
+        self._stream_on           = False
+        self._in_offboard_mission = False
+        self.get_logger().error("=" * 62)
+        self.get_logger().error("[T/L] MISSION ABORTED — FCU link lost.")
+        self.get_logger().error("[T/L] Setpoints stopped. PX4 failsafe should take over.")
+        self.get_logger().error("[T/L] Do NOT restart mission until link is restored")
+        self.get_logger().error("[T/L] and drone is confirmed safely landed.")
+        self.get_logger().error("=" * 62)
+        self._safe_shutdown()
+
+    # ── NEW: read a PX4 parameter via MAVROS ──────────────────────────────────
+    def _get_px4_param_int(self, name: str, timeout=5.0):
+        """NEW: read an integer PX4 parameter through MAVROS.
+        mavros2 (ROS2 Humble) has NO /mavros/param/get service — FCU params
+        are mirrored as ROS parameters on the /mavros/param node instead, so
+        we use the standard /mavros/param/get_parameters interface. The old
+        mavros1-style /mavros/param/get is kept as a fallback. Returns the
+        integer value, or None if it could not be read."""
+        client = self.create_client(GetParameters, "/mavros/param/get_parameters")
+        if client.wait_for_service(timeout_sec=timeout):
+            req = GetParameters.Request()
+            req.names = [name]
+            res = self._call_srv(client, req, timeout=timeout)
+            if res and res.values:
+                v = res.values[0]
+                if v.type == ParameterType.PARAMETER_INTEGER:
+                    return int(v.integer_value)
+                if v.type == ParameterType.PARAMETER_DOUBLE:
+                    return int(v.double_value)
+        # fallback: legacy mavros1-style service (not present on Humble mavros2)
+        client = self.create_client(ParamGet, "/mavros/param/get")
+        if client.wait_for_service(timeout_sec=2.0):
+            req = ParamGet.Request()
+            req.param_id = name
+            res = self._call_srv(client, req, timeout=timeout)
+            if res and res.success:
+                return int(res.value.integer or res.value.real)
+        return None
+
+    # ── NEW: verify PX4 safety parameter before flying ────────────────────────
+    def _check_rc_override_param(self) -> bool:
+        """NEW: confirm PX4's COM_RC_OVERRIDE parameter actually allows the RC
+        pilot to switch out of OFFBOARD mid-flight. Without this set correctly
+        on the flight controller, the RC-override detection in _cb_state() is
+        unenforceable — the sticks physically cannot regain control no matter
+        what this code does. Returns True if verified OK, or if the check
+        could not be performed and was skipped; False only when the value is
+        confirmed wrong."""
+        if not self._rc_override_en or not self._verify_rc_param:
+            return True
+
+        # Make sure the FCU param table is synced to MAVROS first — right
+        # after boot the mirror may still be empty (pull over serial is slow).
+        pull = self.create_client(ParamPull, "/mavros/param/pull")
+        if pull.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info("[SAFETY] Syncing PX4 params (param/pull)...")
+            self._call_srv(pull, ParamPull.Request(force_pull=False), timeout=60.0)
+
+        # Retry for a while: the param may simply not be mirrored yet.
+        value = None
+        t0 = time.time()
+        while value is None and rclpy.ok() and time.time() - t0 < 30.0:
+            value = self._get_px4_param_int("COM_RC_OVERRIDE")
+            if value is None:
+                time.sleep(3.0)
+
+        if value is None:
+            self.get_logger().warn(
+                "[SAFETY] Could not read COM_RC_OVERRIDE — cannot verify. "
+                "Proceeding, but VERIFY MANUALLY in QGC.")
+            return True
+        if value not in (2, 3):
+            self.get_logger().error("=" * 62)
+            self.get_logger().error(
+                f"[SAFETY] COM_RC_OVERRIDE={value} on the flight controller — "
+                "RC sticks CANNOT take over OFFBOARD mode with this setting!")
+            self.get_logger().error(
+                "[SAFETY] Set it to 2 in QGroundControl (Parameters) and "
+                "reboot PX4 before flying this mission.")
+            self.get_logger().error("=" * 62)
+            return False
+        self.get_logger().info(f"[SAFETY] COM_RC_OVERRIDE={value} — verified OK.")
+
+        # Informational: what PX4 will do if our setpoint stream stops
+        # (offboard-loss failsafe). Meaning of the value depends on PX4
+        # version — confirm in QGC that it is Hold / Land / Return.
+        obl = self._get_px4_param_int("COM_OBL_ACT", timeout=3.0)
+        if obl is not None:
+            self.get_logger().info(
+                f"[SAFETY] COM_OBL_ACT={obl} (offboard-loss failsafe action — "
+                "confirm in QGC this maps to Hold/Land/Return for your PX4 version).")
+        return True
+
     # ── EKF stable wait (std-based) ───────────────────────────────────────────
     def _wait_ekf_stable(self, tol=0.08, stable_dur=5.0, timeout=60.0,
                          pre_wait=10.0) -> float:
@@ -336,11 +473,13 @@ class TakeoffLandNode(Node):
     def _wait_altitude(self, target_z, tol=0.15, vz_tol=0.2,
                        stable_dur=2.0, timeout=30.0) -> bool:
         """Returns True when altitude is stable at target_z.
-        Returns False on timeout OR if RC override is detected."""
+        Returns False on timeout OR if RC override / link loss is detected."""
         t0 = time.time()
         t_stable = None
         while time.time() - t0 < timeout and rclpy.ok():
             if self._rc_override:
+                return False
+            if self._link_lost:  # NEW
                 return False
             if not self._sanity_check(target_z, check_alt=False, check_vz=False):
                 return False
@@ -375,6 +514,12 @@ class TakeoffLandNode(Node):
                 return self._safe_shutdown()
             time.sleep(0.2)
         self.get_logger().info("[T/L] FCU connected.")
+
+        # NEW: verify COM_RC_OVERRIDE before continuing — see _check_rc_override_param().
+        if not self._check_rc_override_param():
+            self.get_logger().error(
+                "[T/L] Aborting — RC override safety param not confirmed.")
+            return self._safe_shutdown()
 
         # 2. Wait for valid local position
         self.get_logger().info("[T/L] Waiting for local position (from /px4/sensors)...")
@@ -447,6 +592,8 @@ class TakeoffLandNode(Node):
         stable = self._wait_altitude(takeoff_z, tol=0.15, timeout=30.0)
         if self._rc_override:
             return self._rc_override_abort()
+        if self._link_lost:  # NEW
+            return self._link_lost_abort()
         if not rclpy.ok():
             return
         if not stable:
@@ -461,6 +608,8 @@ class TakeoffLandNode(Node):
         while rclpy.ok() and time.time() - t_h < self._hover_time:
             if self._rc_override:
                 return self._rc_override_abort()
+            if self._link_lost:  # NEW
+                return self._link_lost_abort()
             if not self._sanity_check(takeoff_z, check_alt=True):
                 return
             self._set_sp(self._home_x, self._home_y, takeoff_z, self._home_yaw)
@@ -475,6 +624,8 @@ class TakeoffLandNode(Node):
         self._controlled_descent(takeoff_z)
         if self._rc_override:
             return self._rc_override_abort()
+        if self._link_lost:  # NEW
+            return self._link_lost_abort()
 
         # RC override detection ends — we are handing off to AUTO.LAND
         self._in_offboard_mission = False
@@ -509,6 +660,8 @@ class TakeoffLandNode(Node):
         z = from_z
         while rclpy.ok() and z > target_z:
             if self._rc_override:
+                return
+            if self._link_lost:  # NEW
                 return
             if not self._sanity_check(z, check_alt=False):
                 return

@@ -1,1 +1,0 @@
-/home/jeremy/drone_ws/src/takeoff_land/setup.py

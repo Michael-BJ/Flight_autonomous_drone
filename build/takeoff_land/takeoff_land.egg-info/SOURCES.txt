@@ -16,10 +16,6 @@ takeoff_land/hold_position_node.py
 takeoff_land/mode_monitor.py
 takeoff_land/px4_sensor_reader.py
 takeoff_land/takeoff_land_node.py
-takeoff_land.egg-info/PKG-INFO
-takeoff_land.egg-info/SOURCES.txt
-takeoff_land.egg-info/dependency_links.txt
-takeoff_land.egg-info/entry_points.txt
-takeoff_land.egg-info/requires.txt
-takeoff_land.egg-info/top_level.txt
-takeoff_land.egg-info/zip-safe
+test/test_copyright.py
+test/test_flake8.py
+test/test_pep257.py

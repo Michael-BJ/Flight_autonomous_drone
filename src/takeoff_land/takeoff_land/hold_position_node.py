@@ -32,6 +32,17 @@ REQUIREMENTS:
     - MAVROS and px4_sensor_reader must already be running.
     - Drone must be armed and in the air.
     - Setpoints will stream from startup; switch to OFFBOARD after ~2s.
+
+RC OVERRIDE SAFETY (2026-07-27):
+    Once OFFBOARD is confirmed, any unexpected mode change away from it
+    (RC pilot switching to POSCTL/MANUAL/etc) is latched permanently in
+    _rc_override — it is never cleared. The setpoint publisher checks
+    this flag directly, so streaming stops the instant the override is
+    seen, and every step of run_sequence() (hold loop, descent, AUTO.LAND
+    handoff) re-checks it before doing anything further. This closes a
+    prior bug where switching mode back to OFFBOARD via RC could cause
+    this node to instantly resume commanding the last hold/descent
+    setpoint — an unwanted autonomous movement.
 """
 import json
 import threading
@@ -73,6 +84,15 @@ class HoldPositionNode(Node):
         self._yaw       = 0.0
         self._have_pose = False
 
+        # RC override safety — mirrors takeoff_land_node.py.
+        # True once we've confirmed OFFBOARD is active (arms the detector).
+        self._in_offboard = False
+        # Latched True the instant an unexpected mode change away from
+        # OFFBOARD is seen. Never reset back to False — once the RC pilot
+        # takes the mode away from us, this node must never command
+        # movement or mode changes again for the rest of its life.
+        self._rc_override = False
+
         # Hold target (locked on startup)
         self._hold_x   = 0.0
         self._hold_y   = 0.0
@@ -108,9 +128,23 @@ class HoldPositionNode(Node):
     def _cb_state(self, msg: String):
         try:
             d = json.loads(msg.data)
-            self._connected = d.get("connected", False)
-            self._armed     = d.get("armed",     False)
-            self._mode      = d.get("mode",      "")
+            prev_mode        = self._mode
+            self._connected  = d.get("connected", False)
+            self._armed      = d.get("armed",     False)
+            self._mode       = d.get("mode",      "")
+
+            # RC override detection: unexpected mode change while we hold
+            # OFFBOARD. "AUTO.LAND" is excluded because we set it ourselves
+            # during the final handoff.
+            if (self._in_offboard and
+                    prev_mode == "OFFBOARD" and
+                    self._mode not in ("OFFBOARD", "AUTO.LAND", "")):
+                if not self._rc_override:
+                    self.get_logger().error(
+                        f"[HOLD] MODE CHANGE DETECTED: OFFBOARD -> {self._mode}")
+                    self.get_logger().error(
+                        "[HOLD] RC OVERRIDE — holding aborted. RC pilot has control.")
+                self._rc_override = True
         except Exception:
             pass
 
@@ -136,7 +170,9 @@ class HoldPositionNode(Node):
     # ── setpoint stream ───────────────────────────────────────────────────────
 
     def _publish_sp(self):
-        if not self._stream_on:
+        # Stop the instant an override is latched, don't wait for the
+        # mission thread's polling loop to notice and flip _stream_on off.
+        if not self._stream_on or self._rc_override:
             return
         msg = PositionTarget()
         msg.header.stamp     = self.get_clock().now().to_msg()
@@ -199,6 +235,17 @@ class HoldPositionNode(Node):
         if rclpy.ok():
             rclpy.shutdown()
 
+    def _rc_override_abort(self):
+        """Stop all setpoints immediately and shut down. RC pilot is in
+        control — this node must not touch mode or setpoints again."""
+        self._stream_on = False
+        self.get_logger().error("=" * 62)
+        self.get_logger().error("[HOLD] ABORTED — RC pilot has control.")
+        self.get_logger().error("[HOLD] Setpoints stopped. Do NOT restart hold_position_node")
+        self.get_logger().error("[HOLD] until the drone is safely landed.")
+        self.get_logger().error("=" * 62)
+        self._safe_shutdown()
+
     # ── main sequence ─────────────────────────────────────────────────────────
 
     def run_sequence(self):
@@ -255,9 +302,15 @@ class HoldPositionNode(Node):
         self.get_logger().info(
             f"[HOLD] OFFBOARD active. Holding position for {self._hold_time:.0f}s...")
 
+        # RC override detection is active from here until AUTO.LAND handoff.
+        self._in_offboard = True
+
         # 6. Hold loop
         t_hold = time.time()
         while rclpy.ok() and time.time() - t_hold < self._hold_time:
+            if self._rc_override:
+                return self._rc_override_abort()
+
             self._set_sp(self._hold_x, self._hold_y, self._hold_z, self._hold_yaw)
 
             elapsed = time.time() - t_hold
@@ -267,22 +320,24 @@ class HoldPositionNode(Node):
                 f"landing in {remaining:.0f}s...",
                 throttle_duration_sec=2.0)
 
-            if self._mode != "OFFBOARD":
-                self.get_logger().warn(
-                    f"[HOLD] Mode changed to {self._mode} — RC pilot took control again.")
-                self._stream_on = False
-                return self._safe_shutdown()
-
             if not self._armed:
                 self.get_logger().warn("[HOLD] Drone disarmed unexpectedly.")
                 return self._safe_shutdown()
 
             time.sleep(0.1)
 
+        if self._rc_override:
+            return self._rc_override_abort()
+
         # 7. Controlled descent
         self.get_logger().info("[HOLD] Starting descent...")
         target_z = self._land_handoff
         self._descent(self._hold_z, target_z)
+        if self._rc_override:
+            return self._rc_override_abort()
+
+        # RC override detection ends — we are handing off to AUTO.LAND
+        self._in_offboard = False
 
         # 8. AUTO.LAND handoff
         if self._auto_land:
@@ -309,8 +364,7 @@ class HoldPositionNode(Node):
         step = self._descent_speed * dt
         z    = from_z
         while rclpy.ok() and z > target_z:
-            if self._mode != "OFFBOARD":
-                self.get_logger().warn("[HOLD] Mode changed during descent — stopping.")
+            if self._rc_override:
                 return
             if not self._armed:
                 self.get_logger().info("[HOLD] Disarmed during descent.")

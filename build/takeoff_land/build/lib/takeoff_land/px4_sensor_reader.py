@@ -323,6 +323,9 @@ class PX4SensorReader(Node):
                 "altitude_m": self.gps_data.altitude,
                 "fix_status": self.gps_data.status.status,
             }
+            # flat key for mode_monitor ("NONE" when no fix)
+            snapshot["gps_fix"] = {-1: "NONE", 0: "FIX", 1: "SBAS", 2: "GBAS"}.get(
+                self.gps_data.status.status, "?")
         if self.altitude_data:
             terrain = self.altitude_data.terrain
             snapshot["altitude"] = {
@@ -330,6 +333,9 @@ class PX4SensorReader(Node):
                 "relative_m": self.altitude_data.relative,
                 "terrain_m": None if math.isnan(terrain) else terrain,
             }
+            # flat key for mode_monitor
+            rel = self.altitude_data.relative
+            snapshot["alt_rel"] = 0.0 if math.isnan(rel) else rel
         if self.local_velocity:
             v = self.local_velocity.twist.linear
             snapshot["velocity"] = {
@@ -357,6 +363,8 @@ class PX4SensorReader(Node):
                 "voltage_V": self.battery_status.voltage,
                 "percentage_display": None if raw < 0.0 else round(raw * 100.0, 1),
             }
+            # flat key for mode_monitor
+            snapshot["battery_pct"] = None if raw < 0.0 else round(raw * 100.0, 1)
         return snapshot
 
 
