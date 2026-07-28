@@ -1,0 +1,9 @@
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+
+ros2 launch fm_deploy fm_all.launch.py \
+    model_path:=$HOME/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.pth \
+    goal_dist:=5.0 target_alt:=1.5 max_alt_error:=0.5 \
+    dry_run:=true
