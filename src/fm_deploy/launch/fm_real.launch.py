@@ -2,39 +2,53 @@
 """
 fm_real.launch.py
 =================
-Stack inference FM-Planner untuk DRONE NYATA (Jetson Orin Nano + PX4 + Gemini 2).
-Padanan real-world dari `fm_planning_unknown.launch.py` di workspace simulasi.
+FM-Planner inference stack for the REAL DRONE (Jetson Orin Nano + PX4 + Gemini 2).
+Real-world equivalent of `fm_planning_unknown.launch.py` in the simulation workspace.
 
-Node yang dijalankan:
+Nodes launched:
     mavros_tf_broadcaster_node   /mavros/local_position/pose -> TF odom->base_link
-    static_transform_publisher   base_link -> camera_depth_frame  (WAJIB DIUKUR!)
+    static_transform_publisher   base_link -> camera_depth_frame  (MUST BE MEASURED!)
     gemini2_depth_bridge_node    /camera/depth/image_raw -> /realsense/depth/float32
     depth_to_pointcloud_node     -> /realsense/depth/points
-    octomap_server_unknown       -> /projected_map  (dibaca ESDF)
-    fm_inference_real_node       FM + MINCO + lapisan keselamatan hardware
+    octomap_server_unknown       -> /projected_map  (read by ESDF)
+    fm_inference_real_node       FM + MINCO + hardware safety layer
 
-URUTAN TERMINAL (jangan ditukar):
+TERMINAL ORDER (don't swap):
     T1  ros2 launch fm_deploy mavros_only.launch.py fcu_url:=/dev/ttyTHS1:921600
-        -> tunggu log "Got HEARTBEAT" / [BAT] terisi
-    T2  ros2 launch orbbec_camera gemini2.launch.py        # driver kamera
-        -> pastikan: ros2 topic hz /camera/depth/image_raw
-    T3  ros2 launch fm_deploy fm_real.launch.py \
-            model_path:=<path .onnx atau .pth> dry_run:=true
-    T4  (opsional) rviz2   — lihat /projected_map + /planner/candidates
+        -> wait for "Got HEARTBEAT" / [BAT] to populate
+    T2  ros2 launch orbbec_camera gemini2.launch.py        # camera driver
+        -> confirm: ros2 topic hz /camera/depth/image_raw
+    T3  ros2 launch fm_deploy fm_real.launch.py dry_run:=true
+        # model_path defaults to .onnx, may be omitted; override
+        # model_path:=<path .pth> to force a different backend
+    T4  (optional) rviz2   — view /projected_map + /planner/candidates
 
-PENERBANGAN PERTAMA — JANGAN LEWATI:
-    1) dry_run:=true, PROPELLER DILEPAS. Pastikan "[INF] Replan ok" muncul
-       dan marker kandidat masuk akal.
-    2) dry_run:=false, goal_dist:=0.0, ruangan kosong -> hanya takeoff/hover/land.
-    3) goal_dist:=3.0 tanpa obstacle.
-    4) baru tambahkan obstacle. Pilot memegang RC dengan mode switch siap.
+FIRST FLIGHT — DO NOT SKIP:
+    1) dry_run:=true, PROPELLERS OFF. Confirm "[INF] Replan ok" shows up
+       and the candidate markers look reasonable.
+    2) dry_run:=false, goal_dist:=0.0, empty room -> takeoff/hover/land only.
+    3) goal_dist:=3.0 with no obstacle.
+    4) only then add an obstacle. Pilot holds the RC with the mode switch ready.
 """
+
+import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+# Default model_path: .onnx, not .pth — this Jetson's GPU still fails with
+# CUBLAS_STATUS_ALLOC_FAILED (a JetPack 6.2/CUDA 12.6 driver bug, no fix as
+# of 2026-08-10, see the onnxruntime-gpu-jetson memory), so .pth ALWAYS
+# falls back to .onnx-CPU via the failed-GPU-attempt path first (wastes
+# time + confusing error logs). Going straight to .onnx means the node
+# skips the GPU attempt and goes straight to CPUExecutionProvider, same
+# end result. Override model_path:=...pth on the command line once the
+# GPU is fixed and you want to re-test it.
+_DEFAULT_MODEL_PATH = os.path.expanduser(
+    "~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx")
 
 
 def _f(name):
@@ -53,117 +67,124 @@ def generate_launch_description():
     args = [
         # ── Model ────────────────────────────────────────────────────────────
         DeclareLaunchArgument(
-            "model_path",
-            description="Path checkpoint FM (.onnx disarankan di Jetson, atau .pth)"),
+            "model_path", default_value=_DEFAULT_MODEL_PATH,
+            description="FM checkpoint path (.onnx recommended on Jetson, or "
+                        ".pth). Defaults to .onnx — see the "
+                        "_DEFAULT_MODEL_PATH comment above."),
         DeclareLaunchArgument(
             "K", default_value="8",
-            description="Jumlah kandidat FM per replan. PENTING: export ONNX "
-                        "yang ada mengunci noise pada [8, 9], jadi dengan "
-                        "backend .onnx nilai ini HARUS 8. Hanya .pth yang bebas."),
+            description="Number of FM candidates per replan. IMPORTANT: the "
+                        "existing ONNX export locks noise to [8, 9], so with "
+                        "the .onnx backend this value MUST be 8. Only .pth "
+                        "is free to change it."),
         DeclareLaunchArgument("n_steps", default_value="2",
-                              description="Langkah Euler (khusus backend .pth)"),
+                              description="Euler steps (.pth backend only)"),
         DeclareLaunchArgument(
             "onnx_fallback_on_oom", default_value="true",
-            description="true = kalau .pth gagal dimuat karena CUDA "
-                        "out-of-memory, otomatis pindah ke .onnx (K dipaksa "
-                        "8) alih-alih node crash. Terverifikasi perlu di "
-                        "Jetson ini 2026-07-28 (fragmentasi memori unified)."),
+            description="true = if .pth fails to load due to CUDA "
+                        "out-of-memory, automatically switch to .onnx (K "
+                        "forced to 8) instead of crashing the node. Verified "
+                        "necessary on this Jetson 2026-07-28 (unified memory "
+                        "fragmentation)."),
         DeclareLaunchArgument(
             "onnx_fallback_path", default_value="",
-            description="Path .onnx eksplisit untuk fallback. Kosong = "
-                        "derive otomatis dari model_path (.pth -> .onnx)."),
+            description="Explicit .onnx path to use for the fallback. Empty "
+                        "= auto-derive from model_path (.pth -> .onnx)."),
 
-        # ── Misi (frame HOME — lihat fm_inference_real_node.py) ──────────────
+        # ── Mission (HOME frame — see fm_inference_real_node.py) ──────────────
         DeclareLaunchArgument(
             "goal_dist", default_value="5.0",
-            description="Jarak goal ke DEPAN dari titik home (m). 0 = hanya "
-                        "takeoff/hover/land (uji tahap 2)."),
+            description="Goal distance AHEAD of the home point (m). 0 = "
+                        "takeoff/hover/land only (stage-2 test)."),
         DeclareLaunchArgument("goal_lat", default_value="0.0",
-                              description="Geser goal ke kiri(+)/kanan(-) (m)"),
+                              description="Shift the goal left(+)/right(-) (m)"),
         DeclareLaunchArgument("target_alt", default_value="1.5",
-                              description="Ketinggian jelajah di atas tanah (m)"),
+                              description="Cruise altitude above ground (m)"),
         DeclareLaunchArgument(
             "v_max", default_value="0.5",
-            description="Kecepatan maksimum (m/s). MULAI RENDAH. Simulasi "
-                        "memakai 1.0; di ruangan nyata 0.4-0.6 jauh lebih aman."),
+            description="Max speed (m/s). START LOW. Simulation uses 1.0; "
+                        "in a real room 0.4-0.6 is much safer."),
         DeclareLaunchArgument("replan_period", default_value="1.0"),
         DeclareLaunchArgument(
             "cmd_hz", default_value="50",
-            description="Laju setpoint (Hz). 50 = sama dengan takeoff_land "
-                        "yang sudah terbukti lewat serial; 100 membanjiri "
-                        "link telemetri."),
+            description="Setpoint rate (Hz). 50 = same as takeoff_land, "
+                        "already proven over serial; 100 floods the "
+                        "telemetry link."),
         DeclareLaunchArgument("mission_timeout_s", default_value="180.0"),
         DeclareLaunchArgument("hover_settle_s", default_value="5.0"),
         DeclareLaunchArgument("auto_reverse", default_value="false",
-                              description="false = berhenti di goal (JANGAN "
-                                          "true untuk penerbangan pertama)"),
+                              description="false = stop at the goal (do NOT "
+                                          "set true for the first flight)"),
 
-        # ── Keselamatan ──────────────────────────────────────────────────────
+        # ── Safety ───────────────────────────────────────────────────────────
         DeclareLaunchArgument(
             "dry_run", default_value="true",
-            description="DEFAULT TRUE. Pipeline penuh TANPA arming & TANPA "
-                        "setpoint. Set false hanya setelah dry run bersih."),
+            description="DEFAULT TRUE. Full pipeline WITHOUT arming & "
+                        "WITHOUT setpoints. Only set false after a clean "
+                        "dry run."),
         DeclareLaunchArgument("fence_fwd",  default_value="10.0"),
         DeclareLaunchArgument("fence_back", default_value="3.0"),
         DeclareLaunchArgument("fence_lat",  default_value="4.0"),
         DeclareLaunchArgument("max_home_dist", default_value="12.0",
-                              description="Radius abort keras dari home (m)"),
+                              description="Hard abort radius from home (m)"),
         DeclareLaunchArgument(
             "max_alt_error", default_value="0.5",
-            description="Deviasi z maksimal dari cruise_z sebelum ABORT (m). "
-                        "0.5 -> jendela terbang target_alt +/- 0.5."),
+            description="Max z deviation from cruise_z before ABORT (m). "
+                        "0.5 -> flight window target_alt +/- 0.5."),
         DeclareLaunchArgument("min_battery_v",   default_value="0.0",
-                              description="Tegangan minimum (V). 0 = nonaktif. "
-                                          "4S LiPo: ~14.4 V wajar."),
+                              description="Minimum voltage (V). 0 = disabled. "
+                                          "4S LiPo: ~14.4 V is reasonable."),
         DeclareLaunchArgument("min_battery_pct", default_value="0.0"),
         DeclareLaunchArgument("rc_override_enabled", default_value="true"),
         DeclareLaunchArgument(
             "verify_rc_override_param", default_value="true",
-            description="Cek COM_RC_OVERRIDE di PX4 sebelum terbang. false "
-                        "hanya untuk uji meja tanpa RC ter-bind."),
+            description="Check COM_RC_OVERRIDE on PX4 before flying. false "
+                        "is for bench testing only, with no RC bound."),
         DeclareLaunchArgument("descent_speed",    default_value="0.3"),
         DeclareLaunchArgument("land_handoff_alt", default_value="0.25"),
         DeclareLaunchArgument("auto_land_mode",   default_value="true"),
         DeclareLaunchArgument(
             "write_px4_params", default_value="false",
-            description="true = node menulis MPC_XY_* / EKF2_HGT_REF. Default "
-                        "false: jangan biarkan node mengubah parameter FCU "
-                        "Anda diam-diam."),
+            description="true = the node writes MPC_XY_* / EKF2_HGT_REF. "
+                        "Default false: don't let the node silently change "
+                        "your FCU parameters."),
         DeclareLaunchArgument("px4_vel_cap", default_value="2.0",
-                              description="Dipakai hanya bila write_px4_params:=true"),
+                              description="Only used when write_px4_params:=true"),
         DeclareLaunchArgument(
             "ekf_pre_wait_s", default_value="10.0",
-            description="Jeda konvergensi awal GPS/EKF sebelum std-check "
-                        "ground_z (sama seperti takeoff_land_node.py)."),
+            description="Initial GPS/EKF convergence delay before the "
+                        "ground_z std-check (same as takeoff_land_node.py)."),
 
-        # ── Guard perencana ──────────────────────────────────────────────────
-        # ESCAPE MODE DIMATIKAN (permintaan operator, 2026-07-27).
-        # use_safety_guards adalah SATU-SATUNYA gerbang escape: keempat titik
-        # pemicu _enter_escape() di fm_inference_base.py (guard tabrakan,
-        # guard look-ahead, no-progress, dan replan gagal 2x) semuanya
-        # dibungkus `if self._use_guards`. Dengan false + use_lookahead_guard
-        # true, guard 1 & 2 TETAP mendeteksi bahaya tetapi aksinya menjadi
-        # "invalidate + hover" — drone berhenti di tempat dan replan segera,
-        # bukan meluncur ke arah probe 8-arah.
-        # Kalau semua replan tetap gagal: peta di-reset otomatis, lalu
-        # stuck_abort_s (60 s) / blind_abort_s (10 s) yang mengambil alih ->
-        # abort -> mendarat terkendali. Tidak ada penyelamatan otomatis.
+        # ── Planner guards ───────────────────────────────────────────────────
+        # ESCAPE MODE DISABLED (operator request, 2026-07-27).
+        # use_safety_guards is the ONLY escape gate: all four
+        # _enter_escape() trigger points in fm_inference_base.py (collision
+        # guard, look-ahead guard, no-progress, and 2x failed replan) are
+        # all wrapped in `if self._use_guards`. With it false + use_lookahead_guard
+        # true, guards 1 & 2 STILL detect danger but their action becomes
+        # "invalidate + hover" — the drone stops in place and replans right
+        # away, instead of running an 8-direction escape probe.
+        # If every replan keeps failing: the map auto-resets, then
+        # stuck_abort_s (60s) / blind_abort_s (10s) takes over -> abort ->
+        # controlled landing. There is no automatic rescue.
         DeclareLaunchArgument(
             "use_safety_guards", default_value="false",
-            description="FALSE = escape mode MATI (guard 1&2 tetap aktif, "
-                        "aksinya hover+replan). Ini juga mode 'fair' yang "
-                        "dipakai untuk ablasi di simulasi, jadi hasil terbang "
-                        "nyata bisa dibandingkan langsung. JANGAN set true "
-                        "kecuali Anda memang ingin manuver escape kembali."),
+            description="FALSE = escape mode OFF (guards 1&2 stay active, "
+                        "their action is hover+replan). This is also the "
+                        "'fair' mode used for ablation in simulation, so "
+                        "real-flight results are directly comparable. Do "
+                        "NOT set true unless you actually want escape "
+                        "maneuvers back."),
         DeclareLaunchArgument(
             "use_lookahead_guard", default_value="true",
-            description="WAJIB true selama use_safety_guards false — inilah "
-                        "yang menyisakan guard 1 & 2. Kalau keduanya false, "
-                        "TIDAK ADA guard sama sekali."),
+            description="MUST be true while use_safety_guards is false — "
+                        "this is what leaves guards 1 & 2 in place. If both "
+                        "are false, there is NO guard at all."),
         DeclareLaunchArgument(
             "safe_dis", default_value="0.8",
-            description="Preferensi lunak planner (m dari PUSAT drone). "
-                        "SEMENTARA dinaikkan dari default kode 0.65 -> 0.8 m."),
+            description="Planner's soft preference (m from drone CENTER). "
+                        "TEMPORARILY raised from the code default 0.65 -> "
+                        "0.8 m."),
         DeclareLaunchArgument("hard_clearance",     default_value="0.55"),
         DeclareLaunchArgument("guard_clearance",    default_value="0.60"),
         DeclareLaunchArgument("collision_cost_tol", default_value="20.0"),
@@ -181,52 +202,55 @@ def generate_launch_description():
         DeclareLaunchArgument("candidate_log_path",     default_value=""),
         DeclareLaunchArgument("publish_markers",        default_value="true"),
 
-        # ── Kamera & peta ────────────────────────────────────────────────────
+        # ── Camera & map ─────────────────────────────────────────────────────
         DeclareLaunchArgument("depth_topic",
                               default_value="/camera/depth/image_raw"),
         DeclareLaunchArgument("depth_info_topic",
                               default_value="/camera/depth/camera_info"),
         DeclareLaunchArgument("depth_scale", default_value="0.001",
-                              description="16UC1 -> meter (Gemini 2: 1 mm/unit)"),
+                              description="16UC1 -> meters (Gemini 2: 1 mm/unit)"),
         DeclareLaunchArgument(
             "invalid_fill_m", default_value="10.0",
-            description="Nilai untuk piksel depth tidak valid. 10.0 = 'jauh/"
-                        "aman' (konvensi data latih). JANGAN 0.0 — itu berarti "
-                        "'obstacle menempel di lensa'."),
+            description="Value for invalid depth pixels. 10.0 = 'far/safe' "
+                        "(training-data convention). DO NOT use 0.0 — that "
+                        "means 'obstacle touching the lens'."),
         DeclareLaunchArgument("hole_fill_px", default_value="5"),
         DeclareLaunchArgument("resolution", default_value="0.15",
-                              description="Resolusi octomap (m)"),
+                              description="Octomap resolution (m)"),
         DeclareLaunchArgument("max_range",  default_value="4.0",
-                              description="Jangkauan depth efektif (m)"),
+                              description="Effective depth range (m)"),
         DeclareLaunchArgument("min_range",  default_value="0.5"),
         DeclareLaunchArgument("occ_min_z",  default_value="0.6"),
         DeclareLaunchArgument("occ_max_z",  default_value="2.0"),
         DeclareLaunchArgument("publish_3d_map", default_value="false"),
 
-        # ── Gate ketinggian untuk pengolahan depth ───────────────────────────
-        # Back-projection depth -> pointcloud (dan karenanya seluruh insertion
-        # octomap) hanya berjalan saat drone berada di pita
-        # target_alt +/- gate_alt_margin di atas tanah. Citra depth sendiri
-        # (/realsense/depth/float32) TIDAK di-gate, jadi RViz tetap menampilkan
-        # depth di ketinggian berapa pun.
-        # PENTING: gate sengaja TERBUKA selama drone belum pernah mencapai pita
-        # itu. fm_inference_real_node menunggu depth + ESDF SEBELUM ARM (langkah
-        # 4, timeout 90 s); gate yang tertutup di darat akan membuat langkah itu
-        # selalu gagal. Voxel tanah yang terkumpul selama jendela itu terbuang
-        # sendiri karena octomap di-reset setelah takeoff settle (langkah 13).
+        # ── Altitude gate for depth processing ───────────────────────────────
+        # Depth -> pointcloud back-projection (and therefore all octomap
+        # insertion) only runs while the drone is within the band
+        # target_alt +/- gate_alt_margin above ground. The depth image
+        # itself (/realsense/depth/float32) is NOT gated, so RViz still
+        # shows depth at any altitude.
+        # IMPORTANT: the gate is deliberately OPEN until the drone has ever
+        # reached that band. fm_inference_real_node waits for depth + ESDF
+        # BEFORE ARM (step 4, 90s timeout); a gate closed on the ground
+        # would make that step always fail. Ground voxels collected during
+        # that window are discarded anyway since octomap resets after
+        # takeoff settle (step 13).
         DeclareLaunchArgument(
             "gate_enabled", default_value="true",
-            description="false = olah depth di semua ketinggian (perilaku lama)"),
+            description="false = process depth at all altitudes (old behavior)"),
         DeclareLaunchArgument(
             "gate_alt_margin", default_value="0.5",
-            description="Setengah lebar pita, meter. 0.5 -> 0.7..1.7 m untuk "
-                        "target_alt 1.2. Pusat pita mengikuti target_alt."),
+            description="Half-width of the band, meters. 0.5 -> 0.7..1.7 m "
+                        "for target_alt 1.2. The band's center tracks "
+                        "target_alt."),
 
-        # ── Pemasangan kamera pada badan drone — UKUR SENDIRI! ───────────────
-        # cam_x maju(+), cam_y kiri(+), cam_z atas(+) dari pusat base_link.
-        # roll/pitch/yaw memutar base_link (FLU) -> frame OPTIK kamera
-        # (z ke depan, x ke kanan, y ke bawah). Salah beberapa sentimeter di
-        # sini menggeser SELURUH peta -> drone menghindar ke tempat yang salah.
+        # ── Camera mount on the drone body — MEASURE IT YOURSELF! ────────────
+        # cam_x forward(+), cam_y left(+), cam_z up(+) from base_link center.
+        # roll/pitch/yaw rotate base_link (FLU) -> the camera's OPTICAL
+        # frame (z forward, x right, y down). Being off by a few
+        # centimeters here shifts the ENTIRE map -> the drone dodges toward
+        # the wrong place.
         DeclareLaunchArgument("cam_x",     default_value="0.10"),
         DeclareLaunchArgument("cam_y",     default_value="0.00"),
         DeclareLaunchArgument("cam_z",     default_value="-0.05"),
@@ -288,19 +312,19 @@ def generate_launch_description():
             "min_range":       _f("min_range"),
             "max_range":       _f("max_range"),
             "skip_pixels":     2,
-            # Pusat pita gate = target_alt yang sama dengan perencana.
+            # Gate band center = same target_alt as the planner.
             "gate_enabled":    _b("gate_enabled"),
             "gate_target_alt": _f("target_alt"),
             "gate_alt_margin": _f("gate_alt_margin"),
             "gate_pose_topic": "/mavros/local_position/pose",
-            # Jendela latch ground gate = jendela konvergensi EKF perencana,
-            # supaya kedua node sepakat di mana "tanah" berada.
+            # Ground-gate latch window = the planner's EKF convergence
+            # window, so both nodes agree on where "ground" is.
             "gate_ground_settle_s": _f("ekf_pre_wait_s"),
         }],
     )
 
-    # Nama node WAJIB "octomap_server_unknown": fm_inference_base memanggil
-    # /octomap_server_unknown/set_parameters dan /octomap_server_unknown/reset.
+    # Node name MUST be "octomap_server_unknown": fm_inference_base calls
+    # /octomap_server_unknown/set_parameters and /octomap_server_unknown/reset.
     octomap = Node(
         package="octomap_server",
         executable="octomap_server_node",
@@ -343,7 +367,7 @@ def generate_launch_description():
             "auto_reverse":        _b("auto_reverse"),
             "mission_timeout_s":   _f("mission_timeout_s"),
             "hover_settle_s":      _f("hover_settle_s"),
-            # keselamatan hardware
+            # hardware safety
             "dry_run":             _b("dry_run"),
             "fence_fwd":           _f("fence_fwd"),
             "fence_back":          _f("fence_back"),
@@ -360,7 +384,7 @@ def generate_launch_description():
             "write_px4_params":    _b("write_px4_params"),
             "px4_vel_cap":         _f("px4_vel_cap"),
             "ekf_pre_wait_s":      _f("ekf_pre_wait_s"),
-            # perencana (diwarisi apa adanya dari pipeline simulasi)
+            # planner (inherited as-is from the simulation pipeline)
             "safe_dis":            _f("safe_dis"),
             "hard_clearance":      _f("hard_clearance"),
             "guard_clearance":     _f("guard_clearance"),

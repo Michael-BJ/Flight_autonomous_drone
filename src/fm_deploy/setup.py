@@ -1,3 +1,4 @@
+import os
 from glob import glob
 
 from setuptools import find_packages, setup
@@ -17,8 +18,13 @@ setup(
             'launch/fm_real.launch.py',
             'launch/fm_all.launch.py',
         ]),
-        # Checkpoint FM yang ikut ter-install (opsional — boleh kosong).
-        ('share/' + package_name + '/model/fm', glob('model/fm/*')),
+        # FM checkpoint installed alongside the package (optional — may be
+        # empty). Filtered to files only: model/fm/ can pick up stray
+        # subdirectories (e.g. a backup/extraction in progress) that
+        # setuptools cannot "copy" as a data file, which fails the whole
+        # build.
+        ('share/' + package_name + '/model/fm',
+            [f for f in glob('model/fm/*') if os.path.isfile(f)]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

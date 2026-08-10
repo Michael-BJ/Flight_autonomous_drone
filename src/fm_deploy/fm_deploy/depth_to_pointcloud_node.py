@@ -106,8 +106,8 @@ class DepthToPointcloudNode(Node):
         # Half-width of the band, in metres. 0.5 -> 0.7..1.7 m for target 1.2.
         self.declare_parameter("gate_alt_margin", 0.5)
         self.declare_parameter("gate_pose_topic", "/mavros/local_position/pose")
-        # Jendela konvergensi EKF sebelum ground di-latch. Samakan dengan
-        # ekf_pre_wait_s di fm_inference_real_node.py.
+        # EKF convergence window before ground is latched. Keep this equal
+        # to ekf_pre_wait_s in fm_inference_real_node.py.
         self.declare_parameter("gate_ground_settle_s", 10.0)
 
         self.min_range  = self.get_parameter("min_range").value
@@ -192,11 +192,11 @@ class DepthToPointcloudNode(Node):
             self._ground_z = med if abs(med) <= 3.0 else 0.0
             if abs(med) > 3.0:
                 self.get_logger().warn(
-                    f"[GATE] ground_z tidak wajar ({med:.2f} m) -> 0.0 "
-                    "(sama seperti fm_inference_real_node)")
+                    f"[GATE] ground_z looks unreasonable ({med:.2f} m) -> 0.0 "
+                    "(same as fm_inference_real_node)")
             self.get_logger().info(
                 f"[GATE] ground_z latched = {self._ground_z:.2f} m "
-                f"(median dari {len(self._z_samples)} pose / "
+                f"(median of {len(self._z_samples)} poses / "
                 f"{self.gate_settle:.0f}s)")
             self._z_samples = []
 

@@ -1,118 +1,126 @@
-# `fm_deploy` — inference FM-Planner di drone nyata
+# `fm_deploy` — FM-Planner inference on the real drone
 
-Paket ini adalah versi hardware dari alur inference yang sudah berjalan di
-simulasi (`RL_FM/src/fm_planner`). Perencananya **identik** — `fm_model.py`,
-`fm_inference_base.py`, `fm_inference_node.py`, `min_jerk_planner.py`, dan
-`esdf_ros2.py` disalin apa adanya, tanpa satu baris pun diubah. Kalau logika
-perencanaan ikut diubah di sini, hasil terbang nyata tidak lagi bisa
-dibandingkan dengan hasil simulasi, dan itu melemahkan klaim di paper.
+This package is the hardware version of the inference pipeline that already
+runs in simulation (`RL_FM/src/fm_planner`). The planner is **identical** —
+`fm_model.py`, `fm_inference_base.py`, `fm_inference_node.py`,
+`min_jerk_planner.py`, and `esdf_ros2.py` are copied over as-is, without a
+single line changed. If the planning logic were modified here, real-flight
+results could no longer be compared against simulation results, and that
+weakens the "same model" claim in the paper.
 
-Yang **baru** hanya tiga berkas:
+Only three files are **new**:
 
-| Berkas | Peran |
+| File | Role |
 |---|---|
-| `gemini2_depth_bridge_node.py` | Orbbec Gemini 2 → kontrak input model (pengganti `gz_depth_bridge_node.py`) |
-| `fm_inference_real_node.py` | `FMInferenceNode` + lapisan keselamatan hardware dari `takeoff_land_node.py` |
-| `launch/fm_real.launch.py` | Stack lengkap tanpa dependensi Gazebo |
+| `gemini2_depth_bridge_node.py` | Orbbec Gemini 2 → model input contract (replaces `gz_depth_bridge_node.py`) |
+| `fm_inference_real_node.py` | `FMInferenceNode` + the hardware safety layer from `takeoff_land_node.py` |
+| `launch/fm_real.launch.py` | Full stack with no Gazebo dependency |
 
-`px4_sensor_reader.py` dan `mavros_only.launch.py` diambil dari `takeoff_land`
-(versi serial/Jetson yang sudah terbukti terbang), bukan dari workspace sim.
+`px4_sensor_reader.py` and `mavros_only.launch.py` are taken from
+`takeoff_land` (the serial/Jetson version already proven in flight), not
+from the sim workspace.
 
 ---
 
-## 1. Yang berubah dari simulasi ke dunia nyata
+## 1. What changes going from simulation to the real world
 
-### 1.1 Kamera — bagian paling rawan
+### 1.1 Camera — the most fragile part
 
-Di Gazebo, piksel "tidak ada obstacle" bernilai `+inf`, dan `_form_model_input`
-memetakannya ke 10 m (**jauh/aman**). Gemini 2 mengembalikan **0** untuk "tidak
-ada return" — dan 0 pada konvensi yang sama berarti **"obstacle menempel di
-lensa"**. Penyebab nilai 0 di lapangan justru sering hal yang aman: permukaan
-mengkilap, jendela, benda di luar 10 m, lubang stereo.
+In Gazebo, a "no obstacle" pixel is `+inf`, and `_form_model_input` maps it
+to 10 m (**far/safe**). Gemini 2 returns **0** for "no return" — and 0 under
+the same convention means **"obstacle touching the lens"**. In the field, a
+0 reading is actually often something safe: a shiny surface, a window, an
+object beyond 10 m, a stereo dropout hole.
 
-Kalau depth mentah diteruskan begitu saja, model akan melihat dinding rapat di
-depan hidungnya sepanjang penerbangan. Karena itu bridge:
+If raw depth were passed straight through, the model would see a solid wall
+right in front of its nose for the whole flight. That's why the bridge:
 
-1. konversi 16UC1 mm → 32FC1 meter,
-2. resize ke 640×480 dengan `INTER_NEAREST` (interpolasi linear membuat
-   kedalaman "antara" tepi obstacle dan latar → obstacle hantu),
-3. tambal lubang **kecil** dengan median tetangga,
-4. sisa piksel invalid → `invalid_fill_m` (**default 10.0 m = jauh**),
-5. clip ke `[0, 10]` m sesuai `DEPTH_NORM_MAX_M`,
-6. skala intrinsik `camera_info` ikut menyesuaikan resize (kalau tidak, point
-   cloud salah metrik dan obstacle di octomap jadi lebih lebar/sempit).
+1. converts 16UC1 mm → 32FC1 meters,
+2. resizes to 640×480 with `INTER_NEAREST` (linear interpolation would
+   invent depth "between" an obstacle's edge and the background → ghost
+   obstacles),
+3. patches **small** holes with the neighborhood median,
+4. fills the remaining invalid pixels with `invalid_fill_m` (**default
+   10.0 m = far**),
+5. clips to `[0, 10]` m per `DEPTH_NORM_MAX_M`,
+6. scales the `camera_info` intrinsics to match the resize (otherwise the
+   point cloud is metrically wrong and obstacles in the octomap end up
+   wider/narrower than they are).
 
-Verifikasi sebelum terbang — arahkan drone ke tembok ±1.5 m:
+Verify before flying — point the drone at a wall ±1.5 m away:
 
 ```bash
-ros2 topic hz   /realsense/depth/float32     # ≥10 Hz stabil
-ros2 topic echo /realsense/depth/stats       # p50_m ≈ 1.5, valid_pct tinggi
+ros2 topic hz   /realsense/depth/float32     # a stable ≥10 Hz
+ros2 topic echo /realsense/depth/stats       # p50_m ≈ 1.5, high valid_pct
 ```
 
-Kalau `valid_pct` < 20 %, node akan memperingatkan. Jangan terbang dengan
-kamera yang "buta": outputnya tetap terlihat aman (semua 10 m).
+If `valid_pct` < 20%, the node will warn. Don't fly with a "blind" camera:
+the output still looks safe (everything reads as 10 m).
 
-### 1.2 Frame goal
+### 1.2 Goal frame
 
-Di simulasi drone selalu lahir di (0, 0) menghadap +X, jadi `goal_x:=20`
-langsung benar. Di lapangan origin EKF berada di posisi & heading apa pun saat
-boot. Node ini mengunci **home** (x, y, yaw) tepat sebelum ARM lalu menghitung:
+In simulation the drone always spawns at (0, 0) facing +X, so
+`goal_x:=20` is immediately correct. In the field the EKF origin is at
+whatever position & heading it happens to have at boot. This node locks
+**home** (x, y, yaw) right before ARM and then computes:
 
 ```
 goal = home + R(yaw_home) · [goal_dist, goal_lat]
 ```
 
-Geofence juga didefinisikan di frame home, lalu dibungkus menjadi kotak sejajar
-sumbu untuk tembok virtual ESDF (ESDF hanya mengenal kotak sejajar sumbu; AABB
-selalu lebih longgar, jadi pengaman kerasnya adalah `max_home_dist` di
-watchdog).
+The geofence is also defined in the home frame, then wrapped into an
+axis-aligned box for the virtual ESDF wall (the ESDF only understands
+axis-aligned boxes; the AABB is always more permissive, so the hard
+safeguard is `max_home_dist` in the watchdog).
 
-Konsekuensinya: **arahkan hidung drone ke arah yang Anda inginkan sebelum
-menjalankan misi.**
+Consequence: **point the drone's nose in the direction you want before
+running the mission.**
 
-### 1.3 Lapisan keselamatan yang tidak ada di Gazebo
+### 1.3 Safety layers that don't exist in Gazebo
 
-| Mekanisme | Aksi |
+| Mechanism | Action |
 |---|---|
-| RC override (mode keluar dari OFFBOARD) | setpoint berhenti **seketika**, pilot pegang penuh |
-| Link MAVROS putus saat misi | setpoint berhenti, failsafe PX4 mengambil alih |
-| Geofence `max_home_dist` | abort → descent terkendali → AUTO.LAND |
-| Deviasi ketinggian > `max_alt_error` | abort → mendarat |
-| Baterai < ambang | abort → mendarat |
-| Disarm tak terduga | abort |
-| `mission_timeout_s` | mendarat |
-| TAKEOFF/LANDING | menahan **XY home**, bukan posisi sesaat (di sim posisi sesaat dipakai, artinya drift EKF ikut jadi perintah) |
+| RC override (mode leaves OFFBOARD) | setpoints stop **instantly**, pilot has full control |
+| MAVROS link drops mid-mission | setpoints stop, PX4 failsafe takes over |
+| Geofence `max_home_dist` | abort → controlled descent → AUTO.LAND |
+| Altitude deviation > `max_alt_error` | abort → land |
+| Battery below threshold | abort → land |
+| Unexpected disarm | abort |
+| `mission_timeout_s` | land |
+| TAKEOFF/LANDING | holds **XY home**, not the instantaneous position (sim uses the instantaneous position, meaning EKF drift becomes part of the command) |
 
-Verifikasi `COM_RC_OVERRIDE ∈ {2, 3}` dijalankan sebelum ARM. Tanpa itu stik RC
-secara fisik tidak bisa merebut OFFBOARD, dan seluruh deteksi di atas percuma.
+`COM_RC_OVERRIDE ∈ {2, 3}` is verified before ARM. Without it the RC stick
+can't physically take over OFFBOARD, and every detection above is useless.
 
-### 1.4 Guard perencana: default sengaja BERBEDA dari simulasi
+### 1.4 Planner guards: defaults deliberately DIFFER from simulation
 
-Di sim, `use_safety_guards` default `false` karena tujuannya mengukur perilaku
-mentah model (mode "fair" untuk ablasi). Di lapangan, "membiarkan model gagal"
-berarti menabrak tembok sungguhan — jadi di `fm_real.launch.py` defaultnya
-`true` (guard + escape aktif), `v_max` 0.5 (bukan 1.0), dan `cmd_hz` 50 (bukan
-100, agar tidak membanjiri link serial).
+In sim, `use_safety_guards` defaults to `false` because the goal is to
+measure the model's raw behavior ("fair" mode for ablation). In the field,
+"letting the model fail" means hitting a real wall — so in
+`fm_real.launch.py` the default is `true` (guard + escape active), `v_max`
+is 0.5 (not 1.0), and `cmd_hz` is 50 (not 100, to avoid flooding the serial
+link).
 
-Untuk pengukuran ablasi di dunia nyata nanti, matikan lagi secara eksplisit —
-tapi lakukan hanya di ruang terbuka luas dengan net/pilot siaga.
+For real-world ablation measurements later, turn these off again
+explicitly — but only do that in a large open space with a net/pilot on
+standby.
 
-### 1.5 Parameter PX4 tidak disentuh
+### 1.5 PX4 parameters are not touched
 
-Node sim menulis `EKF2_HGT_REF=1` (referensi tinggi = GPS). Untuk terbang
-**indoor** dengan VIO/optical flow, itu justru merusak estimasi. Default di sini
-`write_px4_params:=false`. Setel `MPC_XY_VEL_MAX` dan sejenisnya lewat
-QGroundControl sesuai wahana Anda.
+The sim node writes `EKF2_HGT_REF=1` (height reference = GPS). For
+**indoor** flight with VIO/optical flow, that actually breaks the
+estimate. The default here is `write_px4_params:=false`. Set
+`MPC_XY_VEL_MAX` and similar via QGroundControl to match your vehicle.
 
 ---
 
-## 2. Instalasi
+## 2. Installation
 
 ```bash
 cd ~/drone_ws/src
 cp -r fm_deploy .
 
-# checkpoint FM (JANGAN ikut di-commit, ukurannya besar)
+# FM checkpoint (do NOT commit this, it's large)
 mkdir -p fm_deploy/model/fm
 cp ~/saved_net/fm/run_20260724_190037/fm_planner_20260724_190037.onnx      fm_deploy/model/fm/
 cp ~/saved_net/fm/run_20260724_190037/fm_planner_20260724_190037.onnx.data fm_deploy/model/fm/
@@ -122,77 +130,79 @@ colcon build --packages-select fm_deploy
 source install/setup.bash
 ```
 
-Dependensi Python di Jetson: `torch` (kalau memakai `.pth`), `onnxruntime-gpu`
-(kalau `.onnx`), `scipy`, `opencv-python`, `pyquaternion`, `cv_bridge`.
+Python dependencies on the Jetson: `torch` (if using `.pth`),
+`onnxruntime-gpu` (if using `.onnx`), `scipy`, `opencv-python`,
+`pyquaternion`, `cv_bridge`.
 
-**Catatan backend ONNX:** file `.onnx` yang ada mengunci input `noise` pada
-bentuk statis `[8, 9]`. Artinya dengan backend ONNX, `K` **harus 8**, dan
-`use_anchor_sampling` (yang meminta K−1 sampel segar) tidak bisa dipakai. Kalau
-butuh K lain, ekspor ulang dengan dimensi dinamis atau pakai `.pth`. Opsetnya 20,
-jadi butuh onnxruntime ≥ 1.17.
+**ONNX backend note:** the existing `.onnx` file locks the `noise` input to
+a static `[8, 9]` shape. That means with the ONNX backend, `K` **must be
+8**, and `use_anchor_sampling` (which requests K−1 fresh samples) can't be
+used. If you need a different K, re-export with dynamic dimensions or use
+`.pth`. Its opset is 20, so it needs onnxruntime ≥ 1.17.
 
 ---
 
-## 3. Menjalankan
+## 3. Running it
 
 ```bash
-# T1 — komunikasi
+# T1 — communication
 ros2 launch fm_deploy mavros_only.launch.py fcu_url:=/dev/ttyTHS1:921600
 
-# T2 — driver kamera (paket Orbbec, di luar repo ini)
+# T2 — camera driver (Orbbec package, outside this repo)
 ros2 launch orbbec_camera gemini2.launch.py
 
-# T3 — persepsi + perencana
+# T3 — perception + planner
 ros2 launch fm_deploy fm_real.launch.py \
     model_path:=$HOME/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx \
     dry_run:=true
 
-# T4 — opsional
+# T4 — optional
 rviz2
 ```
 
-### Tangga pengujian — jangan dilompati
+### Testing ladder — don't skip steps
 
-| Tahap | Perintah | Propeller | Lolos bila |
+| Stage | Command | Propellers | Passes when |
 |---|---|---|---|
-| 1 | `dry_run:=true` | **DILEPAS** | `[INF] Replan ok` muncul; `/planner/candidates` masuk akal; `[FM] GATE two-sided` terisi |
-| 2 | `dry_run:=false goal_dist:=0.0` | terpasang | takeoff → hover → land bersih di ruang kosong |
-| 3 | `dry_run:=false goal_dist:=3.0` | terpasang | terbang lurus 3 m tanpa obstacle |
-| 4 | `goal_dist:=5.0` + 1 obstacle | terpasang | menghindar dengan benar |
+| 1 | `dry_run:=true` | **REMOVED** | `[INF] Replan ok` shows up; `/planner/candidates` looks reasonable; `[FM] GATE two-sided` is populated |
+| 2 | `dry_run:=false goal_dist:=0.0` | on | clean takeoff → hover → land in an empty room |
+| 3 | `dry_run:=false goal_dist:=3.0` | on | straight 3 m flight with no obstacle |
+| 4 | `goal_dist:=5.0` + 1 obstacle | on | dodges correctly |
 
-Tahap 1 tidak butuh baterai motor dan tidak akan pernah arming — inilah tempat
-menemukan masalah TF, satuan depth, dan pemasangan kamera.
-
----
-
-## 4. Yang WAJIB Anda ukur sendiri
-
-**Transform kamera** (`cam_x`, `cam_y`, `cam_z`) dari pusat massa drone ke lensa
-depth, dalam meter, konvensi FLU (maju+, kiri+, atas+). Default `0.10 / 0.00 /
--0.05` disalin dari SDF simulasi dan hampir pasti **tidak** cocok dengan wahana
-Anda. Salah 5 cm menggeser seluruh octomap 5 cm; salah tanda menggeser obstacle
-ke sisi yang keliru.
-
-Cara cek cepat: hover di depan tembok, buka RViz, tampilkan `/projected_map` dan
-TF. Dinding di peta harus berada persis di jarak yang Anda ukur dengan meteran.
-
-`cam_roll/pitch/yaw` (−1.5708 / 0 / −1.5708) memetakan `base_link` FLU ke frame
-**optik** (z ke depan, x ke kanan, y ke bawah) — ubah hanya kalau kamera dipasang
-miring.
+Stage 1 needs no motor battery and will never arm — this is where you find
+TF issues, depth-unit issues, and camera-mount issues.
 
 ---
 
-## 5. Diagnostik cepat
+## 4. What you MUST measure yourself
 
-| Gejala | Periksa |
+**Camera transform** (`cam_x`, `cam_y`, `cam_z`) from the drone's center of
+mass to the depth lens, in meters, FLU convention (forward+, left+, up+).
+The default `0.10 / 0.00 / -0.05` is copied from the simulation SDF and
+almost certainly does **not** match your vehicle. Being off by 5 cm shifts
+the entire octomap by 5 cm; a wrong sign shifts obstacles to the wrong side.
+
+Quick check: hover in front of a wall, open RViz, display `/projected_map`
+and TF. The wall on the map must sit exactly at the distance you measure
+with a tape measure.
+
+`cam_roll/pitch/yaw` (−1.5708 / 0 / −1.5708) maps `base_link` FLU to the
+camera's **optical** frame (z forward, x right, y down) — only change this
+if the camera is mounted at an angle.
+
+---
+
+## 5. Quick diagnostics
+
+| Symptom | Check |
 |---|---|
-| `Timeout depth/ESDF` | `ros2 topic hz /realsense/depth/points`, `ros2 run tf2_ros tf2_echo odom camera_depth_frame`, apakah `/projected_map` terbit |
-| `Message Filter dropping message` di octomap | TF `odom→base_link` tidak mengalir → MAVROS `local_position/pose` kosong (butuh GPS/VIO) |
-| Semua replan gagal | `ros2 topic echo /realsense/depth/stats` — `valid_pct` rendah, atau `occ_min_z/occ_max_z` tidak mengapit `target_alt` |
-| Drone menghindar ke sisi yang salah | transform kamera (bagian 4) |
-| `[FM] GATE two-sided 0%` | wajar untuk lorong sempit; bandingkan dengan angka simulasi pada scene serupa |
-| Setpoint tidak terkirim | `dry_run` masih `true`, atau `_rc_override`/`_link_lost` sudah menyala |
+| `Timeout depth/ESDF` | `ros2 topic hz /realsense/depth/points`, `ros2 run tf2_ros tf2_echo odom camera_depth_frame`, whether `/projected_map` is publishing |
+| `Message Filter dropping message` in octomap | TF `odom→base_link` isn't flowing → MAVROS `local_position/pose` is empty (needs GPS/VIO) |
+| Every replan fails | `ros2 topic echo /realsense/depth/stats` — low `valid_pct`, or `occ_min_z/occ_max_z` doesn't bracket `target_alt` |
+| Drone dodges to the wrong side | camera transform (section 4) |
+| `[FM] GATE two-sided 0%` | normal for a narrow corridor; compare against the simulation numbers for a similar scene |
+| Setpoints not being sent | `dry_run` is still `true`, or `_rc_override`/`_link_lost` is already set |
 
-Log yang layak direkam untuk paper:
-`[REAL] SELESAI` (jumlah replan, veto cost-gate, veto post-check) dan
-`[REAL] Bimodality gate` di akhir setiap misi.
+Log lines worth recording for the paper:
+`[REAL] DONE` (replan count, cost-gate vetoes, post-check vetoes) and
+`[REAL] Bimodality gate` at the end of every mission.

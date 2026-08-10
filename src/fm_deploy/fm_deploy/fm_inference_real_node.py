@@ -1,53 +1,55 @@
 #!/usr/bin/env python3
-# fm_inference_real_node.py — v1.0 — FM-Planner inference di DRONE NYATA
+# fm_inference_real_node.py — v1.0 — FM-Planner inference on REAL hardware
 """
-fm_inference_real_node.py — deployment FM-Planner pada hardware
+fm_inference_real_node.py — FM-Planner deployment on hardware
 ==========================================================================
-Node ini = `FMInferenceNode` (persis yang sudah terbukti di simulasi) +
-LAPISAN KESELAMATAN HARDWARE yang diambil dari `takeoff_land_node.py`
-(program yang sudah pernah terbang sungguhan).
+This node = `FMInferenceNode` (exactly the version already proven in
+simulation) + the HARDWARE SAFETY LAYER taken from `takeoff_land_node.py`
+(a program that has already flown for real).
 
-PRINSIP DESAIN — dan alasannya:
+DESIGN PRINCIPLE — and why:
 
-  Generator kandidat, ranking, MINCO, ESDF, guard, dan escape TIDAK DISENTUH
-  sama sekali; semuanya diwarisi apa adanya dari fm_inference_base /
-  fm_inference_node. Kalau logika perencanaan diubah untuk hardware, hasil
-  terbang nyata tidak lagi bisa dibandingkan dengan hasil simulasi, dan
-  klaim "model yang sama" di paper jadi lemah. Yang ditambahkan di sini
-  HANYA hal-hal yang memang tidak ada di simulasi:
+  The candidate generator, ranking, MINCO, ESDF, guards, and escape are
+  NOT touched at all; everything is inherited as-is from fm_inference_base /
+  fm_inference_node. If the planning logic were changed for hardware, real
+  flight results could no longer be compared against simulation results,
+  weakening the paper's "same model" claim. The ONLY things added here are
+  what genuinely doesn't exist in simulation:
 
-    1. RC OVERRIDE  — pilot boleh merebut kendali kapan saja. Begitu mode
-       berpindah dari OFFBOARD, setpoint BERHENTI seketika (bukan setelah
-       loop misi sempat memeriksa).
-    2. LINK LOSS    — telemetri MAVROS putus saat terbang -> berhenti
-       mengirim setpoint dan biarkan failsafe PX4 yang bekerja.
-    3. GEOFENCE     — batas jarak dari titik home + batas deviasi ketinggian.
-       Di Gazebo, terbang keluar arena hanya merusak data; di lapangan itu
-       menabrak orang.
-    4. BATERAI      — abort + mendarat sebelum tegangan jatuh.
-    5. FRAME HOME   — di simulasi drone selalu lahir di (0,0) menghadap +X,
-       jadi goal (goal_x, 0) benar. Di lapangan origin EKF ada di posisi &
-       heading apa pun saat boot. Goal di sini didefinisikan RELATIF terhadap
-       home: goal = home + R(yaw_home) . [goal_dist, 0]. Arena/geofence ikut
-       dihitung dari home, bukan dari koordinat absolut.
-    6. DRY RUN      — menjalankan SELURUH pipeline (kamera -> octomap -> ESDF
-       -> FM -> MINCO -> marker RViz) TANPA arming dan TANPA setpoint.
-       Ini cara benar untuk uji pertama: baterai terpasang, propeller
-       DILEPAS, drone dipegang/di atas meja, lalu amati log
-       "[FM] GATE two-sided ..." dan marker kandidat. Kalau di sini sudah
-       aneh, jangan pernah dinaikkan.
-    7. TAKEOFF/LANDING menahan XY HOME (bukan posisi sesaat seperti di sim).
-       Menahan posisi sesaat berarti setiap drift EKF ikut jadi setpoint —
-       drone perlahan "mengejar" driftnya sendiri saat naik.
+    1. RC OVERRIDE  — the pilot can take control at any time. The moment
+       the mode switches away from OFFBOARD, setpoints STOP instantly
+       (not after the mission loop gets around to checking).
+    2. LINK LOSS    — MAVROS telemetry drops mid-flight -> stop sending
+       setpoints and let PX4's failsafe take over.
+    3. GEOFENCE     — distance limit from the home point + altitude
+       deviation limit. In Gazebo, flying out of the arena only corrupts
+       data; in the field it hits a person.
+    4. BATTERY      — abort + land before voltage drops too low.
+    5. HOME FRAME   — in simulation the drone always spawns at (0,0)
+       facing +X, so goal (goal_x, 0) is correct as-is. In the field the
+       EKF origin is at whatever position & heading it happens to have at
+       boot. The goal here is defined RELATIVE to home:
+       goal = home + R(yaw_home) . [goal_dist, 0]. The arena/geofence is
+       likewise computed from home, not from absolute coordinates.
+    6. DRY RUN      — runs the ENTIRE pipeline (camera -> octomap -> ESDF
+       -> FM -> MINCO -> RViz markers) WITHOUT arming and WITHOUT
+       setpoints. This is the correct way to run the first test: battery
+       plugged in, propellers OFF, drone held/on a bench, then watch the
+       "[FM] GATE two-sided ..." log and the candidate markers. If
+       anything looks off here, never move past it.
+    7. TAKEOFF/LANDING hold XY HOME (not the instantaneous position like
+       in sim). Holding the instantaneous position means every bit of EKF
+       drift becomes part of the command — the drone slowly "chases" its
+       own drift while climbing.
 
-URUTAN FSM:
-    IDLE -> connect -> cek COM_RC_OVERRIDE -> tunggu pose -> tunggu depth+ESDF
-         -> EKF stabil (ground_z) -> kunci home + hitung goal & geofence
-         -> warm-up model + stream setpoint -> ARM -> OFFBOARD
-         -> TAKEOFF -> settle + reset octomap -> FLYING (replan FM)
-         -> LANDING (descent terkendali -> AUTO.LAND) -> DONE
+FSM ORDER:
+    IDLE -> connect -> check COM_RC_OVERRIDE -> wait for pose -> wait for depth+ESDF
+         -> EKF stable (ground_z) -> lock home + compute goal & geofence
+         -> warm up model + stream setpoints -> ARM -> OFFBOARD
+         -> TAKEOFF -> settle + reset octomap -> FLYING (FM replan)
+         -> LANDING (controlled descent -> AUTO.LAND) -> DONE
 
-CARA PAKAI:
+USAGE:
     ros2 launch fm_deploy fm_real.launch.py \
         model_path:=$HOME/drone_ws/src/fm_deploy/model/fm/fm_planner_XXXX.onnx \
         goal_dist:=6.0 target_alt:=1.2 v_max:=0.5 dry_run:=true
@@ -76,50 +78,53 @@ from fm_inference_node import FMInferenceNode
 
 class FMInferenceRealNode(FMInferenceNode):
 
-    # ── Konstruksi ───────────────────────────────────────────────────────────
+    # ── Construction ─────────────────────────────────────────────────────────
 
     def __init__(self):
-        # Parent menyiapkan model, ESDF, MINCO, subscriber, dan timer setpoint.
+        # The parent sets up the model, ESDF, MINCO, subscribers, and the
+        # setpoint timer.
         super().__init__()
 
-        # ── Parameter khusus hardware ────────────────────────────────────────
-        # Goal dalam FRAME HOME (lihat poin 5 di docstring). goal_x dari parent
-        # diabaikan saat use_home_frame=true.
+        # ── Hardware-specific parameters ─────────────────────────────────────
+        # Goal in the HOME FRAME (see point 5 in the docstring). The
+        # parent's goal_x is ignored when use_home_frame=true.
         self.declare_parameter("use_home_frame", True)
-        self.declare_parameter("goal_dist",      6.0)    # m, maju dari home
-        self.declare_parameter("goal_lat",       0.0)    # m, geser kiri(+)/kanan(-)
-        # Geofence (frame home). Kotak arena ESDF dihitung dari sini.
-        self.declare_parameter("fence_fwd",      12.0)   # m di depan home
-        self.declare_parameter("fence_back",      3.0)   # m di belakang home
-        self.declare_parameter("fence_lat",       4.0)   # m kiri/kanan home
-        self.declare_parameter("max_home_dist",  15.0)   # m, radius abort keras
-        self.declare_parameter("max_alt_error",   1.0)   # m, deviasi z -> abort
-        # Baterai
-        self.declare_parameter("min_battery_v",   0.0)   # V, 0 = nonaktif
-        self.declare_parameter("min_battery_pct", 0.0)   # %, 0 = nonaktif
+        self.declare_parameter("goal_dist",      6.0)    # m, forward from home
+        self.declare_parameter("goal_lat",       0.0)    # m, shift left(+)/right(-)
+        # Geofence (home frame). The ESDF arena box is computed from this.
+        self.declare_parameter("fence_fwd",      12.0)   # m ahead of home
+        self.declare_parameter("fence_back",      3.0)   # m behind home
+        self.declare_parameter("fence_lat",       4.0)   # m left/right of home
+        self.declare_parameter("max_home_dist",  15.0)   # m, hard abort radius
+        self.declare_parameter("max_alt_error",   1.0)   # m, z deviation -> abort
+        # Battery
+        self.declare_parameter("min_battery_v",   0.0)   # V, 0 = disabled
+        self.declare_parameter("min_battery_pct", 0.0)   # %, 0 = disabled
         # RC / link
         self.declare_parameter("rc_override_enabled",       True)
         self.declare_parameter("verify_rc_override_param",  True)
-        # Uji tanpa terbang
+        # Bench test without flying
         self.declare_parameter("dry_run",        False)
-        # Misi
+        # Mission
         self.declare_parameter("mission_timeout_s", 180.0)
         self.declare_parameter("hover_settle_s",      5.0)
         self.declare_parameter("descent_speed",       0.3)
         self.declare_parameter("land_handoff_alt",    0.25)
         self.declare_parameter("auto_land_mode",     True)
-        # Penulisan parameter PX4. Di simulasi parent menulis EKF2_HGT_REF=1
-        # (referensi tinggi = GPS). Di lapangan itu BISA SALAH: kalau Anda
-        # terbang indoor dengan VIO/optical-flow, memaksa GPS sebagai referensi
-        # tinggi merusak estimasi. Default: JANGAN sentuh parameter PX4.
+        # Writing PX4 parameters. In simulation the parent writes
+        # EKF2_HGT_REF=1 (height reference = GPS). In the field that CAN BE
+        # WRONG: if you fly indoor with VIO/optical-flow, forcing GPS as the
+        # height reference corrupts the estimate. Default: DO NOT touch PX4
+        # parameters.
         self.declare_parameter("write_px4_params", False)
-        self.declare_parameter("ekf2_hgt_ref",        -1)   # <0 = tidak ditulis
-        # Jeda sebelum mulai mengukur std EKF Z. Di simulasi EKF langsung
-        # konvergen (tidak butuh ini). Di lapangan, EKF baru mulai stabil
-        # beberapa detik setelah PX4 mendapat fix GPS/VIO — tanpa pre-wait,
-        # jendela std bisa "kebetulan" tampak stabil padahal EKF masih
-        # bergerak menuju nilai akhirnya (ground_z jadi salah, offset ikut
-        # terbawa ke seluruh misi). Sama seperti takeoff_land_node.py.
+        self.declare_parameter("ekf2_hgt_ref",        -1)   # <0 = not written
+        # Delay before starting to measure EKF Z std. In simulation the EKF
+        # converges instantly (doesn't need this). In the field, the EKF
+        # only starts stabilizing a few seconds after PX4 gets a GPS/VIO
+        # fix — without this pre-wait, the std window can "accidentally"
+        # look stable while the EKF is still moving toward its final value
+        # (ground_z gets recorded wrong, and that offset carries through the
+        # whole mission). Same as takeoff_land_node.py.
         self.declare_parameter("ekf_pre_wait_s",      10.0)
 
         self._use_home_frame = bool(self.get_parameter("use_home_frame").value)
@@ -144,7 +149,7 @@ class FMInferenceRealNode(FMInferenceNode):
         self._ekf2_hgt    = int(self.get_parameter("ekf2_hgt_ref").value)
         self._ekf_pre_wait = float(self.get_parameter("ekf_pre_wait_s").value)
 
-        # ── State keselamatan ────────────────────────────────────────────────
+        # ── Safety state ─────────────────────────────────────────────────────
         self._rc_override = False
         self._link_lost   = False
         self._in_offboard_mission = False
@@ -157,76 +162,77 @@ class FMInferenceRealNode(FMInferenceNode):
         self._home_xy     = np.zeros(2)
         self._home_yaw    = 0.0
         self._ground_z    = 0.0
-        self._hold_z      = 0.0      # z yang ditahan saat IDLE/TAKEOFF/LANDING
+        self._hold_z      = 0.0      # z held during IDLE/TAKEOFF/LANDING
 
         self._batt_v   = None
         self._batt_pct = None
 
-        # Watchdog terpisah dari loop misi: loop misi bisa tertahan di dalam
-        # _replan (bisa ratusan ms), sementara pelanggaran geofence/baterai
-        # harus terdeteksi dengan irama tetap.
+        # Watchdog separate from the mission loop: the mission loop can be
+        # blocked inside _replan (can take hundreds of ms), while geofence/
+        # battery violations must be detected on a steady cadence.
         self._wd_timer = self.create_timer(0.2, self._watchdog)
 
         self.get_logger().info("=" * 62)
-        self.get_logger().info("  MODE: DRONE NYATA (fm_inference_real_node)")
+        self.get_logger().info("  MODE: REAL DRONE (fm_inference_real_node)")
         self.get_logger().info("=" * 62)
         self.get_logger().info(
-            f"  Goal          : {self._goal_dist:.1f} m ke depan, "
+            f"  Goal          : {self._goal_dist:.1f} m ahead, "
             f"{self._goal_lat:+.1f} m lateral "
-            + ("(frame HOME)" if self._use_home_frame else "(frame ODOM absolut)"))
+            + ("(HOME frame)" if self._use_home_frame else "(absolute ODOM frame)"))
         self.get_logger().info(
             f"  Geofence      : fwd {self._fence_fwd:.1f} / back "
             f"{self._fence_back:.1f} / lat +-{self._fence_lat:.1f} m "
-            f"| radius abort {self._max_home_d:.1f} m")
+            f"| abort radius {self._max_home_d:.1f} m")
         self.get_logger().info(
-            f"  RC override   : {'AKTIF' if self._rc_ovr_en else 'NONAKTIF'}"
-            f" | verifikasi param: {self._verify_rc}")
+            f"  RC override   : {'ACTIVE' if self._rc_ovr_en else 'DISABLED'}"
+            f" | param verification: {self._verify_rc}")
         self.get_logger().info(
-            f"  Baterai       : "
+            f"  Battery       : "
             + (f"min {self._min_batt_v:.1f} V " if self._min_batt_v > 0 else "")
             + (f"min {self._min_batt_p:.0f} %" if self._min_batt_p > 0 else "")
-            + ("nonaktif" if self._min_batt_v <= 0 and self._min_batt_p <= 0 else ""))
+            + ("disabled" if self._min_batt_v <= 0 and self._min_batt_p <= 0 else ""))
         if self._dry_run:
             self.get_logger().warn(
-                "  DRY RUN       : TIDAK arming, TIDAK mengirim setpoint. "
-                "Pipeline penuh tetap jalan (aman untuk uji di meja).")
+                "  DRY RUN       : NOT arming, NOT sending setpoints. "
+                "Full pipeline still runs (safe for bench testing).")
         self.get_logger().info("=" * 62)
 
-    # ── Callback: deteksi RC override & link loss ────────────────────────────
+    # ── Callback: detect RC override & link loss ──────────────────────────────
 
     def _cb_state(self, msg):
-        super()._cb_state(msg)   # mengisi _connected / _armed / _mode
+        super()._cb_state(msg)   # fills in _connected / _armed / _mode
         try:
             if (self._in_offboard_mission and self._prev_conn
                     and not self._connected and not self._link_lost):
                 self._link_lost = True
                 self.get_logger().error(
-                    "[LINK] FCU TERPUTUS saat misi aktif — setpoint dihentikan.")
-            # Perpindahan mode tak terduga saat misi = pilot mengambil alih.
-            # AUTO.LAND dikecualikan karena kita sendiri yang menyetelnya.
+                    "[LINK] FCU DISCONNECTED during active mission — setpoints stopped.")
+            # Unexpected mode change during the mission = the pilot took over.
+            # AUTO.LAND is excluded since we set that one ourselves.
             if (self._rc_ovr_en and self._in_offboard_mission
                     and self._prev_mode == "OFFBOARD"
                     and self._mode not in ("OFFBOARD", "AUTO.LAND", "")
                     and not self._rc_override):
                 self._rc_override = True
                 self.get_logger().error(
-                    f"[RC] MODE BERUBAH: OFFBOARD -> {self._mode}")
+                    f"[RC] MODE CHANGED: OFFBOARD -> {self._mode}")
                 self.get_logger().error(
-                    "[RC] PILOT MENGAMBIL ALIH — setpoint dihentikan total.")
+                    "[RC] PILOT TOOK OVER — setpoints stopped entirely.")
             self._prev_mode = self._mode
             self._prev_conn = self._connected
         except Exception:
             pass
 
     def _cb_sensors(self, msg):
-        super()._cb_sensors(msg)   # posisi/kecepatan/yaw -> _drone_state
+        super()._cb_sensors(msg)   # position/velocity/yaw -> _drone_state
         try:
             import json
             d = json.loads(msg.data)
-            # PENTING: jangan pakai "posisi != (0,0,0)" sebagai tanda pose siap.
-            # EKF PX4 memang MULAI tepat di (0,0,0) saat inisialisasi di home,
-            # jadi pemeriksaan seperti itu bisa menunggu selamanya. Yang benar:
-            # apakah reader benar-benar mengirim field local_x.
+            # IMPORTANT: don't use "position != (0,0,0)" as the pose-ready
+            # signal. PX4's EKF genuinely STARTS at exactly (0,0,0) when it
+            # initializes at home, so a check like that could wait forever.
+            # The correct check: whether the reader is actually sending the
+            # local_x field.
             if "local_x" in d:
                 self._have_pose = True
             b = d.get("battery")
@@ -240,17 +246,18 @@ class FMInferenceRealNode(FMInferenceNode):
         except Exception:
             pass
 
-    # ── Setpoint: gerbang keselamatan + hold home saat naik/turun ────────────
+    # ── Setpoint: safety gate + hold home while climbing/descending ──────────
 
     def _publish_cmd(self):
-        """Gerbang tunggal untuk SEMUA setpoint. Ditutup seketika saat RC
-        override / link loss / dry run, tanpa menunggu loop misi menyadarinya
-        (celah ~0.1 s yang di takeoff_land_node sengaja ditutup juga)."""
+        """Single gate for ALL setpoints. Closes instantly on RC override /
+        link loss / dry run, without waiting for the mission loop to notice
+        (the ~0.1s gap that takeoff_land_node deliberately closes too)."""
         if self._dry_run or self._rc_override or self._link_lost \
                 or not self._stream_on:
             return
-        # Saat belum/tidak dalam fase FLYING, tahan XY HOME — bukan posisi
-        # sesaat. Kalau memakai posisi sesaat, drift EKF ikut menjadi perintah.
+        # While not (yet) in the FLYING phase, hold XY HOME — not the
+        # instantaneous position. Using the instantaneous position would
+        # turn every bit of EKF drift into a command.
         if (self._home_locked and self._mission_state != self.STATE_FLYING):
             msg = PositionTarget()
             msg.header.stamp     = self.get_clock().now().to_msg()
@@ -269,7 +276,7 @@ class FMInferenceRealNode(FMInferenceNode):
             return
         super()._publish_cmd()
 
-    # ── Watchdog keselamatan (5 Hz) ──────────────────────────────────────────
+    # ── Safety watchdog (5 Hz) ─────────────────────────────────────────────────
 
     def _watchdog(self):
         if self._mission_state not in (self.STATE_TAKEOFF, self.STATE_FLYING):
@@ -282,7 +289,7 @@ class FMInferenceRealNode(FMInferenceNode):
             d = float(np.linalg.norm(pos[:2] - self._home_xy))
             if d > self._max_home_d:
                 self._abort_reason = (
-                    f"GEOFENCE: {d:.1f} m dari home (batas {self._max_home_d:.1f} m)")
+                    f"GEOFENCE: {d:.1f} m from home (limit {self._max_home_d:.1f} m)")
                 return
 
         if self._cruise_z is not None and self._max_alt_err > 0.0 \
@@ -290,25 +297,25 @@ class FMInferenceRealNode(FMInferenceNode):
             dz = abs(float(pos[2]) - float(self._cruise_z))
             if dz > self._max_alt_err:
                 self._abort_reason = (
-                    f"KETINGGIAN menyimpang {dz:.2f} m dari cruise "
-                    f"(batas {self._max_alt_err:.2f} m)")
+                    f"ALTITUDE deviated {dz:.2f} m from cruise "
+                    f"(limit {self._max_alt_err:.2f} m)")
                 return
 
         if self._min_batt_v > 0.0 and self._batt_v is not None \
                 and self._batt_v < self._min_batt_v:
             self._abort_reason = (
-                f"BATERAI {self._batt_v:.2f} V < {self._min_batt_v:.2f} V")
+                f"BATTERY {self._batt_v:.2f} V < {self._min_batt_v:.2f} V")
             return
         if self._min_batt_p > 0.0 and self._batt_pct is not None \
                 and 0.0 <= self._batt_pct < self._min_batt_p:
             self._abort_reason = (
-                f"BATERAI {self._batt_pct:.0f}% < {self._min_batt_p:.0f}%")
+                f"BATTERY {self._batt_pct:.0f}% < {self._min_batt_p:.0f}%")
             return
 
         if self._in_offboard_mission and not self._armed:
-            self._abort_reason = "DISARM tak terduga saat terbang"
+            self._abort_reason = "Unexpected DISARM while flying"
 
-    # ── Verifikasi parameter PX4 (dari takeoff_land_node) ────────────────────
+    # ── PX4 parameter verification (from takeoff_land_node) ───────────────────
 
     def _get_px4_param_int(self, name, timeout=5.0):
         client = self.create_client(GetParameters, "/mavros/param/get_parameters")
@@ -332,13 +339,14 @@ class FMInferenceRealNode(FMInferenceNode):
         return None
 
     def _check_rc_override_param(self) -> bool:
-        """COM_RC_OVERRIDE harus 2 atau 3, jika tidak stik RC secara FISIK tidak
-        bisa merebut OFFBOARD — deteksi di _cb_state tidak akan pernah berguna."""
+        """COM_RC_OVERRIDE must be 2 or 3, otherwise the RC stick can
+        PHYSICALLY NOT take over OFFBOARD — the detection in _cb_state
+        would never help."""
         if not self._rc_ovr_en or not self._verify_rc:
             return True
         pull = self.create_client(ParamPull, "/mavros/param/pull")
         if pull.wait_for_service(timeout_sec=5.0):
-            self.get_logger().info("[SAFETY] Sinkronisasi parameter PX4...")
+            self.get_logger().info("[SAFETY] Syncing PX4 parameters...")
             self._call_srv(pull, ParamPull.Request(force_pull=False), timeout=60.0)
         value, t0 = None, time.time()
         while value is None and rclpy.ok() and time.time() - t0 < 30.0:
@@ -347,27 +355,27 @@ class FMInferenceRealNode(FMInferenceNode):
                 time.sleep(3.0)
         if value is None:
             self.get_logger().warn(
-                "[SAFETY] COM_RC_OVERRIDE tidak terbaca — lanjut, tapi "
-                "VERIFIKASI MANUAL di QGroundControl.")
+                "[SAFETY] COM_RC_OVERRIDE could not be read — continuing, but "
+                "VERIFY MANUALLY in QGroundControl.")
             return True
         if value not in (2, 3):
             self.get_logger().error("=" * 62)
             self.get_logger().error(
-                f"[SAFETY] COM_RC_OVERRIDE={value} — stik RC TIDAK BISA "
-                "mengambil alih OFFBOARD!")
+                f"[SAFETY] COM_RC_OVERRIDE={value} — the RC stick CANNOT "
+                "take over OFFBOARD!")
             self.get_logger().error(
-                "[SAFETY] Set ke 2 di QGroundControl lalu reboot PX4.")
+                "[SAFETY] Set it to 2 in QGroundControl, then reboot PX4.")
             self.get_logger().error("=" * 62)
             return False
         self.get_logger().info(f"[SAFETY] COM_RC_OVERRIDE={value} — OK.")
         obl = self._get_px4_param_int("COM_OBL_ACT", timeout=3.0)
         if obl is not None:
             self.get_logger().info(
-                f"[SAFETY] COM_OBL_ACT={obl} (aksi failsafe bila stream "
-                "setpoint berhenti — pastikan Hold/Land/Return di QGC).")
+                f"[SAFETY] COM_OBL_ACT={obl} (failsafe action if the setpoint "
+                "stream stops — make sure it's Hold/Land/Return in QGC).")
         return True
 
-    # ── Home frame: goal + geofence ──────────────────────────────────────────
+    # ── Home frame: goal + geofence ───────────────────────────────────────────
 
     def _lock_home(self):
         self._home_xy  = self._drone_state.global_pos[:2].copy()
@@ -376,15 +384,16 @@ class FMInferenceRealNode(FMInferenceNode):
 
         if self._use_home_frame:
             c, s = math.cos(self._home_yaw), math.sin(self._home_yaw)
-            fwd = np.array([c, s])            # arah hidung drone saat home
-            lat = np.array([-s, c])           # kiri
+            fwd = np.array([c, s])            # drone's nose direction at home
+            lat = np.array([-s, c])           # left
             self._global_target = (self._home_xy
                                    + fwd * self._goal_dist
                                    + lat * self._goal_lat)
-            # Geofence didefinisikan di frame home, lalu dibungkus jadi kotak
-            # sejajar sumbu (AABB) karena ESDF hanya mengenal kotak sejajar
-            # sumbu. AABB adalah SUPERSET dari kotak yang diputar, jadi selalu
-            # lebih longgar — pengaman kerasnya tetap max_home_dist di watchdog.
+            # The geofence is defined in the home frame, then wrapped into
+            # an axis-aligned box (AABB) because the ESDF only understands
+            # axis-aligned boxes. The AABB is a SUPERSET of the rotated box,
+            # so it's always more permissive — the hard safeguard remains
+            # max_home_dist in the watchdog.
             corners = []
             for f in (-self._fence_back, self._fence_fwd):
                 for l in (-self._fence_lat, self._fence_lat):
@@ -400,7 +409,7 @@ class FMInferenceRealNode(FMInferenceNode):
         self._arena_center = np.array([
             (self._arena_x_min + self._arena_x_max) / 2.0,
             (self._arena_y_min + self._arena_y_max) / 2.0])
-        # Tembok virtual ESDF ikut dipindah ke kotak yang baru dihitung.
+        # The virtual ESDF wall is moved along with the newly computed box.
         self._esdf.arena_bounds = (self._arena_x_min, self._arena_x_max,
                                    self._arena_y_min, self._arena_y_max)
 
@@ -413,30 +422,30 @@ class FMInferenceRealNode(FMInferenceNode):
             f"{self._arena_x_max:.1f}] y[{self._arena_y_min:.1f},"
             f"{self._arena_y_max:.1f}]")
 
-    # ── Abort keras: berhenti mengirim setpoint ──────────────────────────────
+    # ── Hard abort: stop sending setpoints ────────────────────────────────────
 
     def _hard_stop(self, reason, try_auto_land=False):
         self._stream_on = False
         self._in_offboard_mission = False
         self.get_logger().error("=" * 62)
-        self.get_logger().error(f"[REAL] MISI DIHENTIKAN: {reason}")
+        self.get_logger().error(f"[REAL] MISSION STOPPED: {reason}")
         if try_auto_land:
-            self.get_logger().error("[REAL] Menyerahkan ke AUTO.LAND.")
+            self.get_logger().error("[REAL] Handing off to AUTO.LAND.")
             try:
                 self._set_mode("AUTO.LAND")
             except Exception:
                 pass
         else:
             self.get_logger().error(
-                "[REAL] Setpoint berhenti. Kendali ada pada pilot / failsafe PX4.")
+                "[REAL] Setpoints stopped. Control is with the pilot / PX4 failsafe.")
         self.get_logger().error("=" * 62)
         self._mission_state = self.STATE_DONE
 
     def _aborted(self) -> bool:
-        """True jika ada kondisi yang mengharuskan misi berhenti sekarang."""
+        """True if some condition requires the mission to stop right now."""
         return self._rc_override or self._link_lost
 
-    # ── Tunggu ketinggian dengan pemeriksaan hardware ────────────────────────
+    # ── Wait for altitude with hardware checks ─────────────────────────────────
 
     def _wait_altitude_real(self, target_z, tol=0.15, timeout=30.0):
         t0, stable = time.time(), None
@@ -454,40 +463,40 @@ class FMInferenceRealNode(FMInferenceNode):
             time.sleep(0.1)
         return False
 
-    # ── EKF pre-wait (dari takeoff_land_node) ────────────────────────────────
+    # ── EKF pre-wait (from takeoff_land_node) ──────────────────────────────────
 
     def _wait_ekf_stable(self, tol: float = 0.08, stable_dur: float = 3.0,
                          timeout: float = 45.0) -> float:
-        """Override HANYA untuk menambah pre-wait sebelum memanggil std-check
-        bawaan (fm_inference_base._wait_ekf_stable — TIDAK disentuh, dipanggil
-        apa adanya lewat super()). Tanpa jeda ini, EKF yang baru saja dapat
-        fix GPS/VIO bisa tampak "stabil" secara std padahal masih bergerak
-        menuju nilai akhirnya, sehingga ground_z terekam salah dan offset itu
-        terbawa ke seluruh misi. Identik dengan takeoff_land_node.py."""
+        """Override ONLY to add a pre-wait before calling the base std-check
+        (fm_inference_base._wait_ekf_stable — NOT touched, called as-is via
+        super()). Without this delay, an EKF that just got a GPS/VIO fix can
+        look "stable" by std while it's actually still moving toward its
+        final value, so ground_z gets recorded wrong and that offset carries
+        through the whole mission. Identical to takeoff_land_node.py."""
         self.get_logger().info(
-            f"[REAL] Menunggu {self._ekf_pre_wait:.0f}s konvergensi awal GPS/EKF...")
+            f"[REAL] Waiting {self._ekf_pre_wait:.0f}s for initial GPS/EKF convergence...")
         t_pre = time.time()
         while rclpy.ok() and time.time() - t_pre < self._ekf_pre_wait:
             if self._aborted() or self._abort_reason is not None:
-                self.get_logger().warn("[REAL] Pre-wait EKF dibatalkan (abort).")
+                self.get_logger().warn("[REAL] EKF pre-wait cancelled (abort).")
                 break
             time.sleep(0.1)
         return super()._wait_ekf_stable(tol=tol, stable_dur=stable_dur, timeout=timeout)
 
-    # ── Pendaratan terkendali (dari takeoff_land_node) ───────────────────────
+    # ── Controlled landing (from takeoff_land_node) ────────────────────────────
 
     def _controlled_descent(self, from_z):
         self._mission_state = self.STATE_LANDING
         self._cruise_z = None
-        # Mendarat DI TEMPAT: pulang ke home lewat rute yang belum tentu bebas
-        # obstacle jauh lebih berisiko daripada turun di posisi sekarang.
+        # Land IN PLACE: returning home along a route that may not be
+        # obstacle-free is far riskier than descending at the current position.
         self._home_xy = self._drone_state.global_pos[:2].copy()
         dt     = 1.0 / self._cmd_hz
         step   = self._descent_v * dt
         target = self._ground_z + self._land_handoff
         z = from_z
         self.get_logger().info(
-            f"[REAL] LANDING di ({self._home_xy[0]:.2f},{self._home_xy[1]:.2f}) "
+            f"[REAL] LANDING at ({self._home_xy[0]:.2f},{self._home_xy[1]:.2f}) "
             f"-> z={target:.2f} m")
         while rclpy.ok() and z > target:
             if self._aborted():
@@ -495,55 +504,55 @@ class FMInferenceRealNode(FMInferenceNode):
             z = max(target, z - step)
             self._hold_z = z
             if not self._armed:
-                self.get_logger().info("[REAL] Auto-disarm saat turun (land detector).")
+                self.get_logger().info("[REAL] Auto-disarm while descending (land detector).")
                 return
             time.sleep(dt)
         self.get_logger().info(
-            f"[REAL] Descent selesai di z={self._drone_state.global_pos[2]:.2f} m")
+            f"[REAL] Descent finished at z={self._drone_state.global_pos[2]:.2f} m")
 
-    # ── Urutan misi ──────────────────────────────────────────────────────────
+    # ── Mission sequence ────────────────────────────────────────────────────────
 
     def run_sequence(self):
-        # 1. Koneksi FCU
-        self.get_logger().info("[REAL] Menunggu MAVROS (/px4/state)...")
+        # 1. FCU connection
+        self.get_logger().info("[REAL] Waiting for MAVROS (/px4/state)...")
         t0 = time.time()
         while rclpy.ok() and not self._connected:
             if time.time() - t0 > self._conn_timeout:
-                self.get_logger().error("[REAL] Timeout koneksi FCU.")
+                self.get_logger().error("[REAL] FCU connection timeout.")
                 return self._shutdown()
             time.sleep(0.2)
-        self.get_logger().info("[REAL] FCU terhubung.")
+        self.get_logger().info("[REAL] FCU connected.")
 
-        # 2. Verifikasi COM_RC_OVERRIDE SEBELUM apa pun yang bisa terbang
+        # 2. Verify COM_RC_OVERRIDE BEFORE anything that could fly
         if not self._dry_run and not self._check_rc_override_param():
             return self._shutdown()
 
-        # 3. Pose lokal valid (GPS / VIO / optical flow)
-        self.get_logger().info("[REAL] Menunggu posisi lokal (/px4/sensors)...")
+        # 3. Valid local pose (GPS / VIO / optical flow)
+        self.get_logger().info("[REAL] Waiting for local position (/px4/sensors)...")
         t0 = time.time()
         while rclpy.ok() and not self._have_pose:
             if time.time() - t0 > 30.0:
                 self.get_logger().error(
-                    "[REAL] Tidak ada posisi lokal. PX4 butuh GPS/VIO/flow "
-                    "untuk OFFBOARD berbasis posisi.")
+                    "[REAL] No local position. PX4 needs GPS/VIO/flow "
+                    "for position-based OFFBOARD.")
                 return self._shutdown()
             time.sleep(0.2)
 
-        # 4. Persepsi siap
-        self.get_logger().info("[REAL] Menunggu depth + ESDF (octomap)...")
+        # 4. Perception ready
+        self.get_logger().info("[REAL] Waiting for depth + ESDF (octomap)...")
         t0 = time.time()
         while rclpy.ok() and (self._latest_depth is None
                               or not self._esdf.is_ready()):
             if time.time() - t0 > 90.0:
                 self.get_logger().error(
-                    "[REAL] Timeout depth/ESDF. Periksa: driver kamera, "
+                    "[REAL] Timeout depth/ESDF. Check: camera driver, "
                     "gemini2_depth_bridge_node, TF odom->base_link->"
-                    "camera_depth_frame, dan octomap_server.")
+                    "camera_depth_frame, and octomap_server.")
                 return self._shutdown()
             time.sleep(0.5)
-        self.get_logger().info("[REAL] Depth + ESDF siap.")
+        self.get_logger().info("[REAL] Depth + ESDF ready.")
 
-        # 5. Parameter PX4 (default: tidak menyentuh apa pun — lihat docstring)
+        # 5. PX4 parameters (default: don't touch anything — see docstring)
         if self._write_px4:
             if self._ekf2_hgt >= 0:
                 self._set_px4_param_int("EKF2_HGT_REF", self._ekf2_hgt)
@@ -556,33 +565,33 @@ class FMInferenceRealNode(FMInferenceNode):
             time.sleep(2.0)
         else:
             self.get_logger().info(
-                "[REAL] Parameter PX4 TIDAK diubah (write_px4_params:=false). "
-                "Setel MPC_XY_VEL_MAX / EKF2_HGT_REF lewat QGC bila perlu.")
+                "[REAL] PX4 parameters NOT changed (write_px4_params:=false). "
+                "Set MPC_XY_VEL_MAX / EKF2_HGT_REF via QGC if needed.")
 
-        # 6. ground_z dari EKF
+        # 6. ground_z from the EKF
         self._ground_z = self._wait_ekf_stable()
         if abs(self._ground_z) > 3.0:
             self.get_logger().warn(
-                f"[REAL] ground_z tidak wajar ({self._ground_z:.2f} m) -> 0.0")
+                f"[REAL] ground_z looks unreasonable ({self._ground_z:.2f} m) -> 0.0")
             self._ground_z = 0.0
         self._cruise_z = self._ground_z + self._alt
         self._hold_z   = self._ground_z
 
-        # 7. Kunci home, hitung goal & geofence
+        # 7. Lock home, compute goal & geofence
         self._lock_home()
 
-        # 8. Octomap band + pemanasan model
+        # 8. Octomap band + model warm-up
         self._configure_octomap_band(self._alt)
-        self.get_logger().info("[REAL] Pemanasan model...")
+        self.get_logger().info("[REAL] Warming up the model...")
         self._warm_up()
 
-        # ── DRY RUN: pipeline penuh tanpa terbang ────────────────────────────
+        # ── DRY RUN: full pipeline without flying ────────────────────────────
         if self._dry_run:
             self.get_logger().warn("=" * 62)
-            self.get_logger().warn("[REAL] DRY RUN — tanpa ARM, tanpa setpoint.")
+            self.get_logger().warn("[REAL] DRY RUN — no ARM, no setpoints.")
             self.get_logger().warn(
-                "[REAL] Amati '[INF] Replan ok', '[FM] GATE two-sided', dan "
-                "marker /planner/candidates di RViz. Ctrl-C untuk berhenti.")
+                "[REAL] Watch for '[INF] Replan ok', '[FM] GATE two-sided', and "
+                "the /planner/candidates marker in RViz. Ctrl-C to stop.")
             self.get_logger().warn("=" * 62)
             self._mission_state = self.STATE_FLYING
             self._reset_progress()
@@ -595,8 +604,8 @@ class FMInferenceRealNode(FMInferenceNode):
                 time.sleep(0.05)
             return
 
-        # 9. Warm-up stream setpoint (PX4 menolak OFFBOARD tanpa stream)
-        self.get_logger().info("[REAL] Warm-up stream setpoint (~2 s)...")
+        # 9. Warm up the setpoint stream (PX4 refuses OFFBOARD without a stream)
+        self.get_logger().info("[REAL] Warming up the setpoint stream (~2 s)...")
         time.sleep(2.0)
 
         # 10. ARM
@@ -610,7 +619,7 @@ class FMInferenceRealNode(FMInferenceNode):
                     break
             time.sleep(1.5)
         if not armed:
-            self.get_logger().error("[REAL] ARM gagal.")
+            self.get_logger().error("[REAL] ARM failed.")
             return self._shutdown()
 
         # 11. OFFBOARD
@@ -622,7 +631,7 @@ class FMInferenceRealNode(FMInferenceNode):
             self._set_mode("OFFBOARD")
             time.sleep(0.3)
         if self._mode != "OFFBOARD":
-            self.get_logger().error("[REAL] PX4 tidak masuk OFFBOARD.")
+            self.get_logger().error("[REAL] PX4 did not enter OFFBOARD.")
             self._arm(False)
             return self._shutdown()
         self._in_offboard_mission = True
@@ -632,27 +641,27 @@ class FMInferenceRealNode(FMInferenceNode):
         self._hold_z = self._cruise_z
         self.get_logger().info(
             f"[REAL] TAKEOFF -> z={self._cruise_z:.2f} m "
-            f"(fisik ~{self._alt:.1f} m)")
+            f"(physical ~{self._alt:.1f} m)")
         stable = self._wait_altitude_real(self._cruise_z)
         if self._aborted():
-            return self._hard_stop("RC override / link loss saat takeoff")
+            return self._hard_stop("RC override / link loss during takeoff")
         if self._abort_reason is not None:
             return self._land_and_finish()
         if not stable:
-            self.get_logger().warn("[REAL] Takeoff belum stabil — lanjut hati-hati.")
+            self.get_logger().warn("[REAL] Takeoff not yet stable — proceeding carefully.")
 
-        # 13. Settle + peta bersih
+        # 13. Settle + clean map
         time.sleep(self._settle_s)
         if self._octo_reset_client.wait_for_service(timeout_sec=2.0):
             self._call_srv(self._octo_reset_client, EmptySrv.Request(), timeout=5.0)
-            self.get_logger().info("[REAL] Octomap di-reset (peta bersih dari cruise_z)")
+            self.get_logger().info("[REAL] Octomap reset (clean map from cruise_z)")
             time.sleep(1.5)
 
-        # 14. FLYING — loop replan FM
+        # 14. FLYING — FM replan loop
         self._mission_state = self.STATE_FLYING
         self._reset_progress()
         self.get_logger().info(
-            f"[REAL] MULAI -> goal=({self._global_target[0]:.2f},"
+            f"[REAL] START -> goal=({self._global_target[0]:.2f},"
             f"{self._global_target[1]:.2f})")
 
         t_mission = time.time()
@@ -660,13 +669,13 @@ class FMInferenceRealNode(FMInferenceNode):
         while rclpy.ok():
             now = time.time()
             if self._aborted():
-                return self._hard_stop("RC override / link loss saat terbang")
+                return self._hard_stop("RC override / link loss while flying")
             if self._abort_reason is not None:
                 self.get_logger().error(f"[REAL] ABORT: {self._abort_reason}")
                 break
             if self._mission_to > 0.0 and now - t_mission > self._mission_to:
                 self.get_logger().warn(
-                    f"[REAL] Timeout misi {self._mission_to:.0f} s — mendarat.")
+                    f"[REAL] Mission timeout {self._mission_to:.0f} s — landing.")
                 break
 
             due  = now - last_replan >= self._replan_period
@@ -679,7 +688,7 @@ class FMInferenceRealNode(FMInferenceNode):
             dist = float(np.linalg.norm(
                 self._drone_state.global_pos[:2] - self._global_target))
             if not self._escape_active and (dist < 1.0 or self._reached_target):
-                self.get_logger().info(f"[REAL] GOAL TERCAPAI (sisa {dist:.2f} m)")
+                self.get_logger().info(f"[REAL] GOAL REACHED ({dist:.2f} m remaining)")
                 break
             time.sleep(0.05)
 
@@ -693,11 +702,11 @@ class FMInferenceRealNode(FMInferenceNode):
             self._traj.invalidate()
         self._controlled_descent(float(self._drone_state.global_pos[2]))
         if self._aborted():
-            return self._hard_stop("RC override / link loss saat mendarat")
+            return self._hard_stop("RC override / link loss while landing")
 
         self._in_offboard_mission = False
         if self._auto_land:
-            self.get_logger().info("[REAL] Touchdown diserahkan ke AUTO.LAND...")
+            self.get_logger().info("[REAL] Handing touchdown off to AUTO.LAND...")
             self._stream_on = False
             time.sleep(0.2)
             self._set_mode("AUTO.LAND")
@@ -705,7 +714,7 @@ class FMInferenceRealNode(FMInferenceNode):
             while rclpy.ok() and self._armed and time.time() - t0 < 20.0:
                 time.sleep(0.3)
             if self._armed:
-                self.get_logger().warn("[REAL] Land detector lambat — paksa disarm.")
+                self.get_logger().warn("[REAL] Land detector slow — forcing disarm.")
                 self._arm(False)
         else:
             self._arm(False)
@@ -713,14 +722,14 @@ class FMInferenceRealNode(FMInferenceNode):
         self._mission_state = self.STATE_DONE
         self.get_logger().info("=" * 62)
         self.get_logger().info(
-            f"[REAL] SELESAI. Replan sukses: {self._replan_count}, "
-            f"veto cost-gate: {self._n_cost_reject}, "
-            f"veto post-check: {self._n_graze_reject}")
+            f"[REAL] DONE. Successful replans: {self._replan_count}, "
+            f"cost-gate vetoes: {self._n_cost_reject}, "
+            f"post-check vetoes: {self._n_graze_reject}")
         if self._gate_total:
             frac = 100.0 * self._gate_two_sided / self._gate_total
             self.get_logger().info(
                 f"[REAL] Bimodality gate: {self._gate_two_sided}/"
-                f"{self._gate_total} replan dua-sisi ({frac:.0f}%)")
+                f"{self._gate_total} two-sided replans ({frac:.0f}%)")
         if self._abort_reason:
             self.get_logger().error(f"[REAL] (ABORT: {self._abort_reason})")
         self.get_logger().info("=" * 62)
@@ -746,7 +755,7 @@ def main(args=None):
     try:
         executor.spin()
     except KeyboardInterrupt:
-        node.get_logger().warn("[REAL] Ctrl-C — setpoint dihentikan.")
+        node.get_logger().warn("[REAL] Ctrl-C — setpoints stopped.")
         node._stream_on = False
     finally:
         executor.shutdown()

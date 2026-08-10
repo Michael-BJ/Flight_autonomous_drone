@@ -1,66 +1,68 @@
 #!/usr/bin/env python3
-# gemini2_depth_bridge_node.py — v1.0 — Orbbec Gemini 2 -> kontrak input FM
+# gemini2_depth_bridge_node.py — v1.0 — Orbbec Gemini 2 -> FM model input contract
 """
-gemini2_depth_bridge_node.py — jembatan kamera NYATA -> kontrak input model
+gemini2_depth_bridge_node.py — REAL camera bridge -> model input contract
 ==========================================================================
-Padanan real-world dari `gz_depth_bridge_node.py` (simulasi). Di simulasi
-Gazebo mengirim /depth_camera (32FC1, meter) dan node itu meneruskannya ke
-/realsense/depth/float32. Di drone nyata sumbernya adalah driver Orbbec
-(`orbbec_camera`), yang menerbitkan 16UC1 dalam MILIMETER pada
-/camera/depth/image_raw. Node ini menyamakan keduanya sehingga SELURUH
-pipeline hilir (depth_to_pointcloud -> octomap -> ESDF, dan input model FM)
-tidak perlu diubah sama sekali.
+Real-world equivalent of `gz_depth_bridge_node.py` (simulation). In
+simulation Gazebo publishes /depth_camera (32FC1, meters) and that node
+just forwards it to /realsense/depth/float32. On the real drone the source
+is the Orbbec driver (`orbbec_camera`), which publishes 16UC1 in
+MILLIMETERS on /camera/depth/image_raw. This node reconciles the two so
+the ENTIRE downstream pipeline (depth_to_pointcloud -> octomap -> ESDF,
+and the FM model input) needs no changes at all.
 
-Output (identik dengan sim):
-    /realsense/depth/float32       sensor_msgs/Image       32FC1, METER
-    /realsense/depth/camera_info   sensor_msgs/CameraInfo  intrinsik 640x480
-    /realsense/depth/z16           sensor_msgs/Image       16UC1, mm (opsional)
+Output (identical to sim):
+    /realsense/depth/float32       sensor_msgs/Image       32FC1, METERS
+    /realsense/depth/camera_info   sensor_msgs/CameraInfo  640x480 intrinsics
+    /realsense/depth/z16           sensor_msgs/Image       16UC1, mm (optional)
 
 ────────────────────────────────────────────────────────────────────────────
-KENAPA NODE INI TIDAK BOLEH SEKADAR "REMAP TOPIK"
+WHY THIS NODE CAN'T JUST BE A "TOPIC REMAP"
 ────────────────────────────────────────────────────────────────────────────
-Ada tiga perbedaan fisik antara depth Gazebo dan depth Gemini 2 yang, kalau
-dibiarkan, membuat model FM melihat input yang BERBEDA dari data latihnya:
+There are three physical differences between Gazebo depth and Gemini 2
+depth that, left unhandled, make the FM model see input DIFFERENT from
+its training data:
 
-1. SATUAN & TIPE. Gazebo: float32 meter. Gemini 2: uint16 milimeter.
-   -> dikonversi di sini (x depth_scale, default 0.001).
+1. UNIT & DTYPE. Gazebo: float32 meters. Gemini 2: uint16 millimeters.
+   -> converted here (x depth_scale, default 0.001).
 
-2. PIKSEL TIDAK VALID (yang paling berbahaya).
-   Gazebo mengembalikan +inf untuk "tidak ada obstacle sampai far clip".
-   `_form_model_input` memetakan +inf -> DEPTH_NORM_MAX_M (10 m = JAUH/AMAN).
-   Gemini 2 mengembalikan 0 untuk "tidak ada return" — dan 0 pada konvensi
-   yang sama berarti "obstacle NEMPEL DI LENSA". Penyebab 0 di dunia nyata
-   justru sering hal yang jauh/aman: permukaan mengkilap, jendela, benda di
-   luar 10 m, lubang stereo. Kalau 0 diteruskan apa adanya, model akan
-   melihat kabut hitam rapat di depan hidungnya dan berperilaku panik —
-   padahal ruangannya kosong.
-   -> parameter `invalid_fill_m` (DEFAULT 10.0 = far/aman) mengisi piksel
-      tidak valid. `hole_fill_px > 0` menambal lubang KECIL dulu dengan
-      median tetangga (lubang kecil di tengah tembok memang harusnya
-      bernilai seperti temboknya, bukan 10 m), baru sisanya diisi far.
-      SET invalid_fill_m:=0.0 HANYA jika Anda melatih ulang model dengan
-      konvensi itu.
+2. INVALID PIXELS (the most dangerous one).
+   Gazebo returns +inf for "no obstacle up to the far clip".
+   `_form_model_input` maps +inf -> DEPTH_NORM_MAX_M (10 m = FAR/SAFE).
+   Gemini 2 returns 0 for "no return" — and 0 under the same convention
+   means "obstacle TOUCHING THE LENS". In the real world, the cause of a 0
+   reading is actually often something far/safe: a shiny surface, a
+   window, an object beyond 10 m, a stereo dropout hole. If 0 were passed
+   through as-is, the model would see a solid black fog right in front of
+   its nose and panic — even though the room is empty.
+   -> the `invalid_fill_m` parameter (DEFAULT 10.0 = far/safe) fills
+      invalid pixels. `hole_fill_px > 0` first patches SMALL holes with the
+      neighborhood median (a small hole in the middle of a wall should
+      read like the wall, not 10 m), then fills the rest as far.
+      ONLY set invalid_fill_m:=0.0 if you retrain the model with that
+      convention.
 
-3. RESOLUSI & FOV. Model dilatih pada 640x480. Gemini 2 dapat menerbitkan
-   848x480/1280x800 dsb. -> di-resize ke 640x480 dengan INTER_NEAREST
-   (BUKAN interpolasi linear: rata-rata antara tepi obstacle 1 m dan latar
-   8 m menghasilkan "hantu" 4.5 m yang tidak ada bendanya). Intrinsik
-   camera_info ikut diskalakan supaya point cloud tetap benar secara metrik.
+3. RESOLUTION & FOV. The model is trained at 640x480. Gemini 2 can publish
+   848x480/1280x800 etc. -> resized to 640x480 with INTER_NEAREST (NOT
+   linear interpolation: averaging between a 1 m obstacle edge and an 8 m
+   background produces a "ghost" reading of 4.5 m where nothing exists).
+   The camera_info intrinsics are scaled along with it so the point cloud
+   stays metrically correct.
 
-Selain itu depth di-clip ke [min_valid_m, DEPTH_NORM_MAX_M=10.0] karena itulah
-rentang yang dipakai normalisasi input model (lihat DEPTH_NORM_MAX_M di
+Depth is also clipped to [min_valid_m, DEPTH_NORM_MAX_M=10.0] since that's
+the range the model's input normalization expects (see DEPTH_NORM_MAX_M in
 fm_inference_base.py / expert_planner_node.py).
 
 ────────────────────────────────────────────────────────────────────────────
-CARA PAKAI
+USAGE
 ────────────────────────────────────────────────────────────────────────────
     ros2 run fm_deploy gemini2_depth_bridge_node --ros-args \
         -p input_topic:=/camera/depth/image_raw \
         -p input_info_topic:=/camera/depth/camera_info
 
-Verifikasi sebelum terbang (drone di tangan, arahkan ke tembok ~1.5 m):
-    ros2 topic hz   /realsense/depth/float32     # harus >= 10 Hz stabil
-    ros2 topic echo /realsense/depth/stats       # p50 harus ~1.5, valid% tinggi
+Verify before flying (drone in hand, point it at a wall ~1.5 m away):
+    ros2 topic hz   /realsense/depth/float32     # should be a stable >= 10 Hz
+    ros2 topic echo /realsense/depth/stats       # p50 should be ~1.5, valid% high
 """
 import json
 import math
@@ -74,13 +76,13 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
-# Kontrak input model — HARUS sama dengan fm_inference_base.py
+# Model input contract — MUST match fm_inference_base.py
 _W = 640
 _H = 480
 DEPTH_NORM_MAX_M = 10.0
 
-# Fallback intrinsik kalau camera_info dari driver belum datang.
-# HFOV 91 deg = Orbbec Gemini 2 (nilai yang juga dipakai di camera_vfh.launch.py).
+# Fallback intrinsics for when camera_info hasn't arrived from the driver yet.
+# HFOV 91 deg = Orbbec Gemini 2 (the same value used in camera_vfh.launch.py).
 _HFOV_FALLBACK_DEG = 91.0
 
 _SENSOR_QOS = QoSProfile(
@@ -98,13 +100,13 @@ class Gemini2DepthBridgeNode(Node):
         self.declare_parameter("input_topic",      "/camera/depth/image_raw")
         self.declare_parameter("input_info_topic", "/camera/depth/camera_info")
         self.declare_parameter("frame_id",         "camera_depth_frame")
-        # 16UC1 mm -> meter. Gemini 2 default 1 mm/unit.
+        # 16UC1 mm -> meters. Gemini 2 default 1 mm/unit.
         self.declare_parameter("depth_scale",      0.001)
-        # Piksel <= min_valid_m dianggap TIDAK VALID (no-return / self-view).
+        # Pixels <= min_valid_m are considered INVALID (no-return / self-view).
         self.declare_parameter("min_valid_m",      0.15)
-        # Nilai pengganti piksel tidak valid. 10.0 = "jauh/aman" (lihat docstring).
+        # Replacement value for invalid pixels. 10.0 = "far/safe" (see docstring).
         self.declare_parameter("invalid_fill_m",   DEPTH_NORM_MAX_M)
-        # Ukuran kernel median untuk menambal lubang KECIL (0 = tidak menambal).
+        # Median kernel size for patching SMALL holes (0 = no patching).
         self.declare_parameter("hole_fill_px",     5)
         self.declare_parameter("publish_z16",      False)
         self.declare_parameter("stats_period_s",   2.0)
@@ -120,11 +122,11 @@ class Gemini2DepthBridgeNode(Node):
         self._stats_dt   = float(self.get_parameter("stats_period_s").value)
 
         if self._hole_px > 0 and self._hole_px % 2 == 0:
-            self._hole_px += 1   # cv2.medianBlur butuh kernel ganjil
+            self._hole_px += 1   # cv2.medianBlur needs an odd kernel
 
         self._bridge = CvBridge()
-        self._src_info = None       # CameraInfo asli dari driver
-        self._info_out = None       # CameraInfo hasil skala ke 640x480
+        self._src_info = None       # original CameraInfo from the driver
+        self._info_out = None       # CameraInfo scaled to 640x480
         self._n_frames = 0
         self._t_stats  = self.get_clock().now()
 
@@ -153,7 +155,7 @@ class Gemini2DepthBridgeNode(Node):
             f"| hole fill {self._hole_px} px")
         self.get_logger().info("=" * 62)
 
-    # ── camera_info: diskalakan sekali ke 640x480 ────────────────────────────
+    # ── camera_info: scaled once to 640x480 ──────────────────────────────────
 
     def _on_info(self, msg: CameraInfo):
         if self._src_info is not None and msg.width == self._src_info.width \
@@ -162,13 +164,13 @@ class Gemini2DepthBridgeNode(Node):
         self._src_info = msg
         self._info_out = self._scale_info(msg)
         self.get_logger().info(
-            f"[CAM] intrinsik {msg.width}x{msg.height} "
+            f"[CAM] intrinsics {msg.width}x{msg.height} "
             f"fx={msg.k[0]:.1f} -> {_W}x{_H} fx={self._info_out.k[0]:.1f}")
 
     @staticmethod
     def _scale_info(src: CameraInfo) -> CameraInfo:
-        """Intrinsik ikut diskalakan saat citra di-resize, kalau tidak point
-        cloud akan salah metrik (obstacle tampak lebih lebar/sempit)."""
+        """Intrinsics are scaled along with the image resize, otherwise the
+        point cloud ends up metrically wrong (obstacles look wider/narrower)."""
         sx = float(_W) / float(src.width) if src.width else 1.0
         sy = float(_H) / float(src.height) if src.height else 1.0
         out = CameraInfo()
@@ -206,33 +208,33 @@ class Gemini2DepthBridgeNode(Node):
             self.get_logger().error(f"cv_bridge: {exc}", throttle_duration_sec=5.0)
             return
 
-        # 1. ke meter (float32)
+        # 1. to meters (float32)
         if raw.dtype == np.uint16:
             depth = raw.astype(np.float32) * self._scale
         else:
             depth = np.asarray(raw, dtype=np.float32)
         depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # 2. resize ke kontrak model SEBELUM menambal (lebih murah).
-        #    INTER_NEAREST: interpolasi linear akan menciptakan kedalaman
-        #    "antara" tepi obstacle dan latar — obstacle hantu.
+        # 2. resize to the model contract BEFORE patching (cheaper this way).
+        #    INTER_NEAREST: linear interpolation would invent depth values
+        #    "between" an obstacle's edge and the background — ghost obstacles.
         if depth.shape != (_H, _W):
             depth = cv2.resize(depth, (_W, _H), interpolation=cv2.INTER_NEAREST)
 
         invalid = depth <= self._min_valid
         n_invalid = int(invalid.sum())
 
-        # 3. tambal lubang KECIL dengan median tetangga (nilai tembok, bukan far)
+        # 3. patch SMALL holes with the neighborhood median (wall value, not far)
         if self._hole_px > 0 and n_invalid:
             filled = cv2.medianBlur(depth, self._hole_px)
             small = invalid & (filled > self._min_valid)
             depth[small] = filled[small]
             invalid = depth <= self._min_valid
 
-        # 4. sisa piksel tidak valid -> far/aman (lihat docstring, poin 2)
+        # 4. remaining invalid pixels -> far/safe (see docstring, point 2)
         depth[invalid] = self._fill
 
-        # 5. clip ke rentang normalisasi model
+        # 5. clip to the model's normalization range
         np.clip(depth, 0.0, DEPTH_NORM_MAX_M, out=depth)
 
         stamp = self.get_clock().now().to_msg()
@@ -273,13 +275,13 @@ class Gemini2DepthBridgeNode(Node):
         }
         self._n_frames = 0
         self._pub_stats.publish(String(data=json.dumps(payload)))
-        # Peringatan dini: kamera yang "buta" (hampir semua piksel invalid) akan
-        # tetap menghasilkan citra 10 m yang tampak aman -> drone terbang membabi
-        # buta. Lebih baik ribut di terminal.
+        # Early warning: a "blind" camera (almost all pixels invalid) will
+        # still produce a 10 m image that looks safe -> the drone flies
+        # blind. Better to make noise in the terminal.
         if pct_valid < 20.0:
             self.get_logger().warn(
-                f"[CAM] hanya {pct_valid:.0f}% piksel valid — periksa exposure/"
-                "permukaan/jarak. Depth dianggap 'jauh' di sisanya!",
+                f"[CAM] only {pct_valid:.0f}% of pixels valid — check exposure/"
+                "surfaces/distance. Depth is being treated as 'far' everywhere else!",
                 throttle_duration_sec=5.0)
 
 

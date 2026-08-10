@@ -116,12 +116,12 @@ class PX4SensorReader(Node):
         auto_launch_mavros = self.get_parameter(
             "auto_launch_mavros").get_parameter_value().bool_value
 
-        # fm_deploy: laju publikasi /px4/state + /px4/sensors.
-        # DEFAULT 10.0 = identik dengan versi takeoff_land DAN dengan reader
-        # yang dipakai di simulasi, jadi perilaku planner sama persis.
-        # Naikkan ke 20-30 Hz kalau guard terasa lambat bereaksi: seluruh
-        # state drone (posisi, kecepatan, yaw) yang dipakai guard, ESDF, dan
-        # yaw setpoint hanya di-refresh secepat timer ini.
+        # fm_deploy: publish rate for /px4/state + /px4/sensors.
+        # DEFAULT 10.0 = identical to the takeoff_land version AND to the
+        # reader used in simulation, so planner behavior matches exactly.
+        # Raise to 20-30 Hz if guards feel slow to react: the entire drone
+        # state (position, velocity, yaw) used by the guards, ESDF, and the
+        # yaw setpoint only refreshes as fast as this timer.
         self.declare_parameter("publish_hz", 10.0)
         publish_hz = float(
             self.get_parameter("publish_hz").get_parameter_value().double_value)

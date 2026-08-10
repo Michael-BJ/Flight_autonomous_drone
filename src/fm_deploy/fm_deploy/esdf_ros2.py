@@ -133,8 +133,8 @@ class ESDF:
             self.unknown_2d = (raw == -1).astype(np.uint8).reshape(
                 self.map_height, self.map_width)
 
-            # DINDING VIRTUAL ARENA: tandai sel di luar batas sebagai occupied
-            # (pusat sel = origin + (i+0.5)*res, konsisten get_edt_dis).
+            # VIRTUAL ARENA WALL: mark cells outside the bounds as occupied
+            # (cell center = origin + (i+0.5)*res, consistent with get_edt_dis).
             if self.arena_bounds is not None:
                 bx0, bx1, by0, by1 = self.arena_bounds
                 res = self.map_resolution

@@ -2,32 +2,33 @@
 """
 fm_all.launch.py
 =================
-Satu terminal untuk semuanya: MAVROS + driver kamera Orbbec Gemini 2 +
-seluruh stack fm_deploy (bridge, pointcloud, octomap, FM inference).
-Tidak menjalankan RViz — pakai `rviz2` di terminal terpisah kalau perlu.
+One terminal for everything: MAVROS + Orbbec Gemini 2 camera driver +
+the whole fm_deploy stack (bridge, pointcloud, octomap, FM inference).
+Does not run RViz — use `rviz2` in a separate terminal if needed.
 
-Padanan gabungan dari:
+Combined equivalent of:
     T1  ros2 launch fm_deploy mavros_only.launch.py fcu_url:=...
     T2  ros2 launch orbbec_camera gemini2.launch.py
     T3  ros2 launch fm_deploy fm_real.launch.py model_path:=... dry_run:=true
 
-Urutan start dijaga lewat TimerAction (MAVROS -> kamera -> fm stack) supaya
-log tidak bertabrakan dan `_kill_stale` di mavros_only.launch.py sempat
-selesai sebelum node lain naik. Ini bukan syarat keras ROS (topic/TF sudah
-late-binding — node yang start lebih dulu cuma menunggu data), cuma bikin
-log lebih runut dan cocok dengan urutan yang didokumentasikan.
+Start order is enforced via TimerAction (MAVROS -> camera -> fm stack) so
+logs don't collide and `_kill_stale` in mavros_only.launch.py has time to
+finish before other nodes come up. This isn't a hard ROS requirement
+(topics/TF are already late-binding — a node that starts first just waits
+for data), it just keeps the log readable and matches the documented order.
 
-Hanya parameter yang paling sering diubah (README §5) yang diekspos di sini.
-Parameter fm_real.launch.py lain (guard perencana, resolusi octomap, dst.)
-tetap memakai default aslinya — jalankan fm_real.launch.py langsung kalau
-perlu menyetel itu.
+Only the parameters that get changed most often (README §5) are exposed
+here. Other fm_real.launch.py parameters (planner guards, octomap
+resolution, etc.) still use their original defaults — run fm_real.launch.py
+directly if you need to tune those.
 
-Contoh:
+Example (model_path now has a .onnx default, may be omitted):
     ros2 launch fm_deploy fm_all.launch.py \\
         fcu_url:=/dev/ttyACM0:57600 \\
-        model_path:=/home/jeremy/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.pth \\
         dry_run:=true
 """
+import os
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
@@ -37,107 +38,123 @@ from launch.substitutions import LaunchConfiguration
 _FM_DEPLOY_SHARE = get_package_share_directory("fm_deploy")
 _ORBBEC_SHARE = get_package_share_directory("orbbec_camera")
 
+# Default model_path: .onnx, not .pth. This Jetson's GPU still fails with
+# CUBLAS_STATUS_ALLOC_FAILED (a JetPack 6.2/CUDA 12.6 driver bug, no fix
+# as of 2026-08-10 — see the onnxruntime-gpu-jetson memory), so .pth
+# ALWAYS falls back to .onnx-CPU via the failed-GPU-attempt path (wastes
+# ~2s + confusing error logs). Point straight at .onnx here so the node
+# skips that GPU attempt and goes straight to CPUExecutionProvider — same
+# end result, faster start, cleaner logs. K stays locked to 8 on this
+# backend either way (see fm_inference_node.py), so nothing is lost by
+# defaulting here. Override model_path:=...pth on the command line once
+# the GPU is fixed and you want to re-test it.
+_DEFAULT_MODEL_PATH = os.path.expanduser(
+    "~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx")
+
 
 def generate_launch_description():
     args = [
-        # ── Komunikasi ───────────────────────────────────────────────────────
+        # ── Communication ────────────────────────────────────────────────────
         DeclareLaunchArgument(
             "fcu_url", default_value="/dev/ttyACM0:57600",
             description="FCU URL — USB: /dev/ttyACM0:57600 | Jetson UART: /dev/ttyTHS1:921600"),
 
         # ── Model ────────────────────────────────────────────────────────────
         DeclareLaunchArgument(
-            "model_path",
-            description="Path checkpoint FM (.onnx atau .pth)"),
+            "model_path", default_value=_DEFAULT_MODEL_PATH,
+            description="FM checkpoint path (.onnx or .pth). Defaults to "
+                        ".onnx — see the _DEFAULT_MODEL_PATH comment above."),
         DeclareLaunchArgument("K", default_value="8"),
         DeclareLaunchArgument(
             "onnx_fallback_on_oom", default_value="true",
-            description="true = kalau .pth gagal dimuat karena CUDA "
-                        "out-of-memory, otomatis pindah ke .onnx (K dipaksa "
-                        "8) alih-alih node crash."),
+            description="true = if .pth fails to load due to CUDA "
+                        "out-of-memory, automatically switch to .onnx (K "
+                        "forced to 8) instead of crashing the node."),
         DeclareLaunchArgument("onnx_fallback_path", default_value=""),
 
-        # ── Misi ─────────────────────────────────────────────────────────────
+        # ── Mission ──────────────────────────────────────────────────────────
         DeclareLaunchArgument("goal_dist",  default_value="5.0"),
         DeclareLaunchArgument("goal_lat",   default_value="0.0"),
         DeclareLaunchArgument("target_alt", default_value="1.5"),
         DeclareLaunchArgument("v_max",      default_value="0.5"),
         DeclareLaunchArgument("mission_timeout_s", default_value="180.0"),
 
-        # ── Keselamatan ──────────────────────────────────────────────────────
+        # ── Safety ───────────────────────────────────────────────────────────
         DeclareLaunchArgument(
             "dry_run", default_value="true",
-            description="DEFAULT TRUE. Set false hanya setelah dry run bersih."),
+            description="DEFAULT TRUE. Only set false after a clean dry run."),
         DeclareLaunchArgument(
             "safe_dis", default_value="0.8",
-            description="Preferensi lunak planner (m dari PUSAT drone). "
-                        "Planner lebih suka jalur >= nilai ini, tapi bukan "
-                        "batas keras (lihat guard_clearance/hard_clearance "
-                        "untuk itu). SEMENTARA dinaikkan dari default kode "
-                        "0.65 -> 0.8 m atas permintaan uji 2026-07-28."),
+            description="Planner's soft preference (m from drone CENTER). "
+                        "The planner prefers paths >= this value, but it's "
+                        "not a hard limit (see guard_clearance/hard_clearance "
+                        "for that). TEMPORARILY raised from the code default "
+                        "0.65 -> 0.8 m per the 2026-07-28 test request."),
         DeclareLaunchArgument("fence_fwd",     default_value="10.0"),
         DeclareLaunchArgument("fence_back",    default_value="3.0"),
         DeclareLaunchArgument("fence_lat",     default_value="4.0"),
         DeclareLaunchArgument("max_home_dist", default_value="12.0"),
         DeclareLaunchArgument(
             "max_alt_error", default_value="0.5",
-            description="Deviasi z maksimal dari cruise_z sebelum ABORT (m)."),
+            description="Max z deviation from cruise_z before ABORT (m)."),
         DeclareLaunchArgument("min_battery_v", default_value="0.0"),
         DeclareLaunchArgument(
             "ekf_pre_wait_s", default_value="10.0",
-            description="Jeda konvergensi awal GPS/EKF sebelum std-check "
-                        "ground_z (sama seperti takeoff_land_node.py)."),
+            description="Initial GPS/EKF convergence delay before the "
+                        "ground_z std-check (same as takeoff_land_node.py)."),
 
-        # ── Kamera pada badan drone — UKUR SENDIRI (lihat README §4/§6) ──────
+        # ── Camera mount on the drone body — MEASURE IT YOURSELF (see README §4/§6) ──
         DeclareLaunchArgument("cam_x", default_value="0.10"),
         DeclareLaunchArgument("cam_y", default_value="0.00"),
         DeclareLaunchArgument("cam_z", default_value="-0.05"),
 
-        # ── Stream kamera — HANYA DEPTH ──────────────────────────────────────
-        # Satu-satunya masukan pipeline adalah depth (/camera/depth/image_raw);
-        # color dan IR tidak dipakai node mana pun. Kalau ketiganya dinyalakan
-        # (default gemini2.launch.py) di port USB 2.0, color 1280x720@30 MJPG +
-        # IR 1280x800@10 menghabiskan bandwidth lebih dulu dan stream DEPTH
-        # GAGAL START — driver tidak memberi error, hanya diam. Akibatnya
-        # octomap tidak pernah terisi, ESDF tidak pernah ready, dan
-        # fm_inference_real_node berhenti di "Timeout depth/ESDF" setelah 90 s.
-        # Verifikasi: depth-only -> /camera/depth/image_raw ~8 Hz.
-        # Nyalakan lagi hanya untuk debug visual, dan sebaiknya di port USB 3.0.
+        # ── Camera stream — DEPTH ONLY ───────────────────────────────────────
+        # The pipeline's only input is depth (/camera/depth/image_raw);
+        # no node uses color or IR. If all three are enabled (gemini2.launch.py
+        # default) on a USB 2.0 port, color 1280x720@30 MJPG + IR 1280x800@10
+        # eat the bandwidth first and the DEPTH stream FAILS TO START — the
+        # driver gives no error, it just stays silent. The result: octomap
+        # never fills in, ESDF never becomes ready, and fm_inference_real_node
+        # stalls at "Timeout depth/ESDF" after 90s.
+        # Verification: depth-only -> /camera/depth/image_raw ~8 Hz.
+        # Only re-enable these for visual debugging, and preferably on a
+        # USB 3.0 port.
         DeclareLaunchArgument("enable_color",       default_value="false"),
         DeclareLaunchArgument("enable_ir",          default_value="false"),
-        # Point cloud dibuat depth_to_pointcloud_node, bukan driver.
+        # Point cloud is built by depth_to_pointcloud_node, not the driver.
         DeclareLaunchArgument("enable_point_cloud", default_value="false"),
-        # Tanpa color, align depth->color tidak ada gunanya. Mematikannya juga
-        # membuat depth tetap di frame sensornya sendiri, konsisten dengan TF
-        # base_link -> camera_depth_frame yang dipakai stack ini.
+        # Without color, depth->color alignment is pointless. Disabling it
+        # also keeps depth in its own sensor frame, consistent with the
+        # base_link -> camera_depth_frame TF this stack uses.
         DeclareLaunchArgument("depth_registration", default_value="false"),
-        # 0 = biarkan driver memilih (terverifikasi 1280x800@10 Y16). Turunkan
-        # bila latensi depth di USB 2.0 masih terlalu tinggi.
+        # 0 = let the driver choose (verified 1280x800@10 Y16). Lower this
+        # if depth latency over USB 2.0 is still too high.
         DeclareLaunchArgument("depth_width",  default_value="0"),
         DeclareLaunchArgument("depth_height", default_value="0"),
         DeclareLaunchArgument("depth_fps",    default_value="0"),
-        # KONFLIK TF — JANGAN dinyalakan. Driver Orbbec default publish_tf:=true
-        # dan menerbitkan `camera_link -> camera_depth_frame` di /tf_static.
-        # fm_real.launch.py menerbitkan `base_link -> camera_depth_frame` di
-        # /tf_static juga. Satu frame anak dengan DUA induk: karena keduanya
-        # latched, induk mana yang menang di buffer tiap subscriber bergantung
-        # urutan kedatangan pesan — tidak deterministik. Kalau camera_link yang
-        # menang, lookup odom->camera_depth_frame gagal, octomap membuang semua
-        # cloud, /projected_map tidak pernah terbit, dan fm_inference_real_node
-        # berhenti di "Timeout depth/ESDF" (gejala README §5).
-        # Terverifikasi 2026-07-28: publish_tf:=false -> /tf_static kamera kosong,
-        # depth tetap 9.2 Hz.
+        # TF CONFLICT — DO NOT enable. The Orbbec driver defaults to
+        # publish_tf:=true and publishes `camera_link -> camera_depth_frame`
+        # on /tf_static. fm_real.launch.py also publishes
+        # `base_link -> camera_depth_frame` on /tf_static. One child frame
+        # with TWO parents: since both are latched, whichever parent wins in
+        # each subscriber's buffer depends on message arrival order — not
+        # deterministic. If camera_link wins, the odom->camera_depth_frame
+        # lookup fails, octomap drops every cloud, /projected_map never
+        # publishes, and fm_inference_real_node stalls at "Timeout
+        # depth/ESDF" (the symptom in README §5).
+        # Verified 2026-07-28: publish_tf:=false -> camera /tf_static is
+        # empty, depth stays at 9.2 Hz.
         DeclareLaunchArgument("publish_tf", default_value="false"),
-        # Accel/gyro sudah default false di gemini2.launch.py, TAPI
-        # enable_sync_output_accel_gyro default true tetap menerbitkan
-        # /camera/accel/imu_info, /camera/gyro/imu_info dan
-        # /camera/gyro_accel/sample. Tidak ada node di stack ini yang memakainya
-        # — pipeline hanya butuh depth.
+        # Accel/gyro already default to false in gemini2.launch.py, BUT
+        # enable_sync_output_accel_gyro defaults to true and still publishes
+        # /camera/accel/imu_info, /camera/gyro/imu_info and
+        # /camera/gyro_accel/sample. No node in this stack uses them — the
+        # pipeline only needs depth.
         DeclareLaunchArgument("enable_sync_output_accel_gyro", default_value="false"),
         DeclareLaunchArgument("enable_accel", default_value="false"),
         DeclareLaunchArgument("enable_gyro",  default_value="false"),
 
-        # ── Gate ketinggian pengolahan depth (lihat fm_real.launch.py) ───────
+        # ── Depth-processing altitude gate (see fm_real.launch.py) ───────────
         DeclareLaunchArgument("gate_enabled",    default_value="true"),
         DeclareLaunchArgument("gate_alt_margin", default_value="0.5"),
     ]

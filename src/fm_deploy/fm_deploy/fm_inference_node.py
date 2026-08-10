@@ -50,23 +50,33 @@ Model file: checkpoint from fm_trainer.py
 Extra parameters vs fm_inference_base:
   K       (default 8) : candidates sampled per replan
   n_steps (default 2) : Euler steps (.pth backend only)
-  onnx_fallback_on_oom (default True) : kalau .pth gagal dimuat karena CUDA
-      out-of-memory, otomatis pindah ke backend .onnx sekali, bukan crash.
-      Terlihat di lapangan 2026-07-28 di Jetson Orin Nano: `torch.load(...)`
-      gagal dengan "CUDA error: out of memory" walau RAM tampak cukup di
-      `free -h` — root cause-nya fragmentasi memori unified Jetson
-      (tegrastats melaporkan `lfb` / largest-free-block cuma puluhan MB).
-      ONNX-nya sendiri sudah terverifikasi jalan di CPU di mesin yang sama,
-      jadi fallback ini aman: kalau CUDAExecutionProvider juga tidak
-      tersedia untuk onnxruntime (kasus di mesin ini), sesi ONNX otomatis
-      turun ke CPUExecutionProvider — tidak pernah crash dua kali karena
-      alasan GPU yang sama.
-      K DIPAKSA ke 8 saat fallback terjadi (lihat docstring gemini2_depth_
-      bridge_node.py yang sama soal keterbatasan ini: export .onnx yang ada
-      mengunci noise input pada bentuk statis [8, 9]).
-  onnx_fallback_path (default "") : path .onnx eksplisit dipakai saat
-      fallback. Kosong = derive otomatis dari model_path (ganti ekstensi
-      .pth -> .onnx, direktori sama).
+  onnx_fallback_on_oom (default True) : if .pth fails to run on the GPU,
+      automatically switch backends instead of crashing. Seen in the field
+      2026-07-28 and again 2026-08-04 on this Jetson Orin Nano:
+      `torch.load(...)` + `.to(cuda)` ALWAYS succeeds (it's just a memory
+      copy, never touches cuBLAS/cuDNN) even when the GPU is broken — the
+      failure only shows up on the FIRST forward pass ("CUDA out of
+      memory" OR "CUBLAS_STATUS_ALLOC_FAILED", same root cause: Jetson
+      unified-memory fragmentation, `tegrastats` reports `lfb` /
+      largest-free-block at just a few MB even with plenty of total free
+      RAM — a reboot does NOT guarantee a fix). That's why `_load_model`
+      now forces one dummy forward pass on the GPU right after loading, so
+      this failure is caught here instead of on the first in-flight replan.
+      IMPORTANT: onnxruntime does NOT automatically fall back to
+      CPUExecutionProvider when CUDAExecutionProvider fails to init
+      (version 1.23.0, verified 2026-08-04) — it raises instead.
+      `_load_model` wraps the InferenceSession creation in its own
+      try/except and retries CPUExecutionProvider manually; don't remove
+      that on the assumption onnxruntime handles it itself.
+      If the .onnx fallback file doesn't exist, this code falls straight
+      back to .pth on CPU (not a crash).
+      K is FORCED to 8 when falling back to .onnx (see the
+      gemini2_depth_bridge_node.py docstring for the same limitation: the
+      existing .onnx export locks the noise input to a static [8, 9]
+      shape). Falling back to .pth-on-CPU does NOT lock K.
+  onnx_fallback_path (default "") : explicit .onnx path used for the
+      fallback. Empty = auto-derive from model_path (swap the .pth
+      extension for .onnx, same directory).
 
 Usage:
   ros2 launch fm_planner fm_planning_unknown.launch.py \
@@ -214,28 +224,57 @@ class FMInferenceNode(FMInferenceBase):
             try:
                 self._fm = load_checkpoint(self._model_path, device=self._device)
                 self._fm.eval()
+                if self._device.type == "cuda":
+                    # torch.load()/.to(device) only copies memory — it never
+                    # touches cuBLAS/cuDNN, so a broken GPU (OOM, or the
+                    # CUBLAS_STATUS_ALLOC_FAILED Jetson unified-memory
+                    # fragmentation documented above) loads "successfully"
+                    # and only crashes on the first real forward pass. Force
+                    # that pass now, at load time, so it's caught here
+                    # instead of during the first in-flight replan.
+                    dummy = torch.zeros(
+                        1, IMG_WIDTH * IMG_HEIGHT + MOTION_INPUT_SIZE,
+                        device=self._device)
+                    with torch.no_grad():
+                        self._fm.sample(dummy, K=self._K, n_steps=self._n_steps)
                 return (f"FM PyTorch ({self._device}) "
                         f"K={self._K} n_steps={self._n_steps}")
             except RuntimeError as exc:
-                is_oom = "out of memory" in str(exc).lower()
-                if not (is_oom and self._onnx_fallback):
+                # Broad match, not just "out of memory": Jetson's
+                # CUBLAS_STATUS_ALLOC_FAILED (unified-memory fragmentation)
+                # never contains that phrase but is exactly as fatal to the
+                # GPU path.
+                is_gpu_failure = "cuda" in str(exc).lower()
+                if not (is_gpu_failure and self._onnx_fallback):
                     raise
                 self.get_logger().error(
-                    f"[FM] CUDA OOM saat memuat .pth: {exc} — "
-                    f"fallback ke .onnx (onnx_fallback_on_oom aktif)")
+                    f"[FM] GPU failed while loading/testing .pth: {exc} — "
+                    f"falling back to .onnx (onnx_fallback_on_oom active)")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 onnx_path = (self._onnx_fallback_path
                              or os.path.splitext(self._model_path)[0] + ".onnx")
                 if not os.path.isfile(onnx_path):
                     self.get_logger().error(
-                        f"[FM] Fallback GAGAL: {onnx_path} tidak ditemukan. "
-                        "Set onnx_fallback_path kalau nama file berbeda.")
-                    raise
+                        f"[FM] {onnx_path} not found — falling back "
+                        f"straight to .pth on CPU (not .onnx).")
+                    self._device = torch.device("cpu")
+                    # Measured 2026-08-04 on this Orin Nano: this model's cost
+                    # is ~entirely the image encoder (K/n_steps barely move
+                    # it), and multi-threaded eager CPU is SLOWER than
+                    # single-threaded (532ms @ 6 threads vs 400ms @ 1) —
+                    # thread hand-off overhead dominates a model this small.
+                    # Does not affect the MinJerkPlanner optimizer (numpy, not
+                    # torch-threaded).
+                    torch.set_num_threads(1)
+                    self._fm = load_checkpoint(self._model_path, device=self._device)
+                    self._fm.eval()
+                    return (f"FM PyTorch (cpu, GPU failed) "
+                            f"K={self._K} n_steps={self._n_steps}")
                 if self._K != 8:
                     self.get_logger().warn(
-                        f"[FM] Backend ONNX mengunci K=8 (noise input statis "
-                        f"[8,9]); K={self._K} -> dipaksa 8.")
+                        f"[FM] ONNX backend locks K=8 (static noise input "
+                        f"shape [8,9]); K={self._K} -> forced to 8.")
                     self._K = 8
                 self._use_pth   = False
                 self._model_path = onnx_path
@@ -243,10 +282,20 @@ class FMInferenceNode(FMInferenceBase):
 
         if not HAS_ONNX:
             raise RuntimeError("onnxruntime not installed")
-        self._session = ort.InferenceSession(
-            self._model_path,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
-        tag = " [FALLBACK dari .pth krn CUDA OOM]" if fell_back else ""
+        try:
+            self._session = ort.InferenceSession(
+                self._model_path,
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+        except Exception as exc:
+            # onnxruntime does NOT silently fall back to CPU when the CUDA
+            # provider fails to init (e.g. the same cuBLAS alloc failure as
+            # above) — it raises. Retry CPU-only ourselves.
+            self.get_logger().error(
+                f"[FM] ONNX failed to init CUDAExecutionProvider ({exc}) — "
+                f"forcing CPUExecutionProvider.")
+            self._session = ort.InferenceSession(
+                self._model_path, providers=['CPUExecutionProvider'])
+        tag = " [FALLBACK from .pth due to GPU failure]" if fell_back else ""
         return f"FM ONNX ({self._session.get_providers()}) K={self._K}{tag}"
 
     def _sample_params(self, input_flat, k=None):
