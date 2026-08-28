@@ -88,6 +88,44 @@ class TakeoffLandNode(Node):
         self.declare_parameter("max_vz",             3.0)   # m/s — max vz during hover/descent
         self.declare_parameter("max_alt_error",      1.5)   # m — max altitude deviation during hover
 
+        # ── GPS quality pre-arm gate (added after the 2026-08-27 incident) ────
+        # WHY THIS EXISTS: on 2026-08-27 the drone armed and took off with
+        # fix_type=0 and 0 satellites visible. Nothing in this node objected:
+        # _wait_ekf_stable() only looks at the STANDARD DEVIATION of z over a
+        # few seconds, so an estimate that is steady-but-wrong (or momentarily
+        # quiet while drifting) passes it, and /px4/sensors publishes a
+        # local position regardless of whether that position means anything.
+        # The commanded setpoint was purely vertical (x/y pinned to home), yet
+        # the position estimate jumped, the controller "corrected" toward the
+        # phantom error, and the drone drifted sideways into a tree. One run
+        # that day tripped the 0.5 m drift limit 4 ms after takeoff — no
+        # physical craft moves 1.48 m in 4 ms, that was the estimate jumping.
+        #
+        # The drift/sanity checks below only fire once the drone is ALREADY
+        # airborne, and their abort path (AUTO.LAND) still relies on the same
+        # broken position estimate. So the only real fix is to never leave the
+        # ground: refuse to ARM until the GPS is actually usable.
+        #
+        # INDOOR/VIO FLIGHT: set require_gps:=false. The drone then relies on
+        # whatever else feeds PX4's local position (VIO, optical flow) and YOU
+        # are responsible for confirming that source is healthy.
+        self.declare_parameter("require_gps",        True)
+        self.declare_parameter("min_fix_type",       3)     # 3 = 3D fix (GPSRAW enum)
+        self.declare_parameter("min_satellites",     8)
+        self.declare_parameter("max_hdop",           2.0)   # unitless dilution of precision
+        self.declare_parameter("gps_wait_timeout",   120.0) # s to wait for a good fix
+        self.declare_parameter("gps_stable_dur",     5.0)   # s quality must hold continuously
+
+        # ── EKF ground_z trust criteria (see _wait_ekf_stable) ───────────────
+        # max_ground_z is the absolute-value check: we take off FROM THE
+        # GROUND, so a local-frame z far from 0 means the estimate is broken,
+        # no matter how steady it looks. On 2026-08-27 the old std-only check
+        # accepted ground_z = 5.459 m (and another run 8.379 m) for a drone
+        # sitting on the ground.
+        self.declare_parameter("max_ground_z",       1.0)   # m, |z| allowed on the ground
+        self.declare_parameter("ekf_window_s",       5.0)   # s of samples for std/spread
+        self.declare_parameter("max_ground_drift",   0.20)  # m peak-to-peak within window
+
         self._alt             = float(self.get_parameter("target_alt").value)
         self._hover_time      = float(self.get_parameter("hover_time").value)
         self._cmd_hz          = int(self.get_parameter("cmd_hz").value)
@@ -102,6 +140,15 @@ class TakeoffLandNode(Node):
         self._max_pos_error   = float(self.get_parameter("max_pos_error").value)
         self._max_vz          = float(self.get_parameter("max_vz").value)
         self._max_alt_error   = float(self.get_parameter("max_alt_error").value)
+        self._require_gps     = bool(self.get_parameter("require_gps").value)
+        self._min_fix_type    = int(self.get_parameter("min_fix_type").value)
+        self._min_sats        = int(self.get_parameter("min_satellites").value)
+        self._max_hdop        = float(self.get_parameter("max_hdop").value)
+        self._gps_wait_to     = float(self.get_parameter("gps_wait_timeout").value)
+        self._gps_stable_dur  = float(self.get_parameter("gps_stable_dur").value)
+        self._max_ground_z    = float(self.get_parameter("max_ground_z").value)
+        self._ekf_window_s    = float(self.get_parameter("ekf_window_s").value)
+        self._max_gnd_drift   = float(self.get_parameter("max_ground_drift").value)
 
         # ── Drone state (filled from /px4/state & /px4/sensors) ───────────────
         self._connected = False
@@ -111,6 +158,10 @@ class TakeoffLandNode(Node):
         self._vel       = np.zeros(3)
         self._yaw       = 0.0
         self._have_pose = False
+        # GPS quality from /px4/sensors ("gps_quality" block). None = the
+        # reader has not sent one yet, which the pre-arm gate treats as
+        # "not proven good" rather than as "fine".
+        self._gps_q     = None
 
         # ── RC override safety ─────────────────────────────────────────────────
         # True while we are actively in TAKEOFF/HOVER/LANDING (OFFBOARD mission).
@@ -158,6 +209,14 @@ class TakeoffLandNode(Node):
         self.get_logger().info(
             f"[T/L] Sanity limits — pos:{self._max_pos_error:.1f}m  "
             f"vz:{self._max_vz:.1f}m/s  alt_err:{self._max_alt_error:.1f}m")
+        if self._require_gps:
+            self.get_logger().info(
+                f"[T/L] GPS pre-arm gate: ENABLED — fix>=3D, "
+                f"sats>={self._min_sats}, HDOP<={self._max_hdop:.1f}")
+        else:
+            self.get_logger().warn(
+                "[T/L] GPS pre-arm gate: DISABLED (require_gps:=false) — "
+                "indoor/VIO only!")
         self.get_logger().info("=" * 62)
 
     # ── Callbacks (read JSON from reader) ─────────────────────────────────────
@@ -210,6 +269,9 @@ class TakeoffLandNode(Node):
                 float(d.get("vel_y", 0.0)),
                 float(d.get("vel_z", 0.0)),
             ])
+            q = d.get("gps_quality")
+            if isinstance(q, dict):
+                self._gps_q = q
         except Exception:
             pass
 
@@ -433,41 +495,218 @@ class TakeoffLandNode(Node):
                 "confirm in QGC this maps to Hold/Land/Return for your PX4 version).")
         return True
 
-    # ── EKF stable wait (std-based) ───────────────────────────────────────────
+    # ── GPS quality pre-arm gate ──────────────────────────────────────────────
+    def _gps_quality_problem(self):
+        """Return None when GPS quality is good enough to fly, else a short
+        human-readable reason string. Missing/unknown values count as BAD:
+        an unknown fix is exactly the situation that put the drone in a tree
+        on 2026-08-27, so it must never be treated as acceptable."""
+        q = self._gps_q
+        if not q:
+            return "no GPS quality data from /px4/sensors yet"
+
+        fix = q.get("fix_type")
+        if fix is None:
+            return "fix_type unknown"
+        if int(fix) < self._min_fix_type:
+            names = {0: "NO GPS", 1: "NO FIX", 2: "2D fix", 3: "3D fix",
+                     4: "DGPS", 5: "RTK-float", 6: "RTK-fixed"}
+            return (f"fix_type={names.get(int(fix), fix)} "
+                    f"(need >= {self._min_fix_type} = 3D fix)")
+
+        sats = q.get("satellites")
+        if sats is None:
+            return "satellite count unknown"
+        if int(sats) < self._min_sats:
+            return f"only {int(sats)} satellites (need >= {self._min_sats})"
+
+        hdop = q.get("hdop")
+        if hdop is None:
+            return "HDOP unknown"
+        if float(hdop) > self._max_hdop:
+            return f"HDOP {float(hdop):.2f} too high (need <= {self._max_hdop:.2f})"
+
+        return None
+
+    def _wait_gps_quality(self) -> bool:
+        """Block until GPS quality is good CONTINUOUSLY for gps_stable_dur.
+
+        Requiring it to hold (rather than sampling once) is deliberate: a
+        receiver that is still acquiring flickers in and out of a valid fix,
+        and a single lucky sample is how a marginal GPS talks its way past a
+        gate like this one. Returns False on timeout -> caller must abort."""
+        if not self._require_gps:
+            self.get_logger().warn("=" * 62)
+            self.get_logger().warn(
+                "[GPS] require_gps:=false — GPS pre-arm gate DISABLED.")
+            self.get_logger().warn(
+                "[GPS] Only do this indoors with a healthy VIO/optical-flow "
+                "source feeding PX4's local position. YOU are responsible for "
+                "verifying it.")
+            self.get_logger().warn("=" * 62)
+            return True
+
+        self.get_logger().info(
+            f"[GPS] Pre-arm gate: need fix>={self._min_fix_type} (3D), "
+            f"sats>={self._min_sats}, HDOP<={self._max_hdop:.2f}, "
+            f"held for {self._gps_stable_dur:.0f}s "
+            f"(timeout {self._gps_wait_to:.0f}s)...")
+
+        t0 = time.time()
+        t_good = None
+        last_report = 0.0
+        while rclpy.ok() and time.time() - t0 < self._gps_wait_to:
+            problem = self._gps_quality_problem()
+            now = time.time()
+            if problem is None:
+                if t_good is None:
+                    t_good = now
+                    q = self._gps_q or {}
+                    self.get_logger().info(
+                        f"[GPS] Quality OK (sats={q.get('satellites')}, "
+                        f"HDOP={q.get('hdop')}) — holding "
+                        f"{self._gps_stable_dur:.0f}s to confirm...")
+                elif now - t_good >= self._gps_stable_dur:
+                    q = self._gps_q or {}
+                    self.get_logger().info(
+                        f"[GPS] Pre-arm gate PASSED — fix_type={q.get('fix_type')}, "
+                        f"sats={q.get('satellites')}, HDOP={q.get('hdop')}, "
+                        f"h_acc={q.get('h_acc_m')}m")
+                    return True
+            else:
+                if t_good is not None:
+                    self.get_logger().warn(
+                        f"[GPS] Quality lost again: {problem} — restarting hold.")
+                t_good = None
+                if now - last_report >= 5.0:
+                    last_report = now
+                    self.get_logger().warn(
+                        f"[GPS] Waiting for usable GPS: {problem} "
+                        f"({self._gps_wait_to - (now - t0):.0f}s left)")
+            time.sleep(0.2)
+
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            f"[GPS] PRE-ARM GATE FAILED: {self._gps_quality_problem()}")
+        self.get_logger().error(
+            "[GPS] REFUSING TO ARM. Flying on a bad position estimate is how "
+            "the drone drifted into a tree on 2026-08-27.")
+        self.get_logger().error(
+            "[GPS] Move to open sky away from trees/buildings and retry, or "
+            "set require_gps:=false ONLY if a healthy VIO/optical-flow source "
+            "is providing PX4's local position.")
+        self.get_logger().error("=" * 62)
+        return False
+
+    # ── EKF stable wait (value + spread + drift) ──────────────────────────────
     def _wait_ekf_stable(self, tol=0.08, stable_dur=5.0, timeout=60.0,
-                         pre_wait=10.0) -> float:
+                         pre_wait=10.0):
+        """Determine ground_z, or return None if the estimate cannot be trusted.
+
+        HOW THE OLD VERSION WAS FOOLED (2026-08-27): it took the standard
+        deviation of the last TEN samples — a ONE SECOND window — and nothing
+        else. On the ground that day the EKF z was swinging roughly +-5 m over
+        ~50 s (logged: 4.99 -> 0.87 -> 10.07 -> 5.45 while the drone sat
+        still). At the turning points of that slow swing the one-second spread
+        is tiny, so std came out 0.0166 and the check declared "stable" with
+        ground_z = 5.459 m for a drone sitting on the ground. Takeoff then
+        proceeded on an estimate that was metres wrong, the controller chased
+        the phantom error sideways, and the drone ended up in a tree.
+
+        Three independent criteria must now hold CONTINUOUSLY for stable_dur,
+        because each one catches a failure the others miss:
+
+          a) std over the window < tol
+                 the original check — catches fast jitter.
+          b) peak-to-peak over the window <= max_ground_drift
+                 catches the SLOW drift that a short-window std cannot see.
+                 A one-second std of 0.0166 says nothing about a metre of
+                 travel over the preceding half minute.
+          c) |mean z| <= max_ground_z
+                 the absolute-value check. We take off FROM THE GROUND, so a
+                 local-frame z of 5.46 m (or -7.18 m, also logged that day) is
+                 not "stable", it is proof the estimate is broken. Steadiness
+                 alone can never establish correctness — a wrong number that
+                 sits still is still wrong.
+
+        On timeout this now returns None instead of handing back whatever the
+        mean happened to be. The old behaviour ("could not confirm the EKF, so
+        fly on it anyway") is exactly backwards for a safety check.
+        """
         self.get_logger().info(
             f"[T/L] Waiting {pre_wait:.0f}s for GPS/EKF initial convergence...")
         t_pre = time.time()
         while time.time() - t_pre < pre_wait and rclpy.ok():
             time.sleep(0.1)
 
+        n_win = max(10, int(self._ekf_window_s / 0.1))   # samples in the window
         self.get_logger().info(
-            f"[T/L] Waiting for EKF Z stability (tol={tol}m, dur={stable_dur}s)...")
+            f"[T/L] Waiting for EKF Z: std<{tol}m, spread<={self._max_gnd_drift}m "
+            f"over {self._ekf_window_s:.1f}s, |z|<={self._max_ground_z}m, "
+            f"held {stable_dur:.0f}s (timeout {timeout:.0f}s)...")
+
         t0 = time.time()
         z_hist = []
         stable_start = None
+        last_report = 0.0
         while time.time() - t0 < timeout and rclpy.ok():
             z_hist.append(float(self._pos[2]))
-            if len(z_hist) > 50:
+            if len(z_hist) > n_win:
                 z_hist.pop(0)
-            if len(z_hist) >= 10:
-                z_std = float(np.std(z_hist[-10:]))
-                if z_std < tol:
-                    if stable_start is None:
-                        stable_start = time.time()
-                    elif time.time() - stable_start >= stable_dur:
-                        z_ground = float(np.mean(z_hist[-10:]))
-                        self.get_logger().info(
-                            f"[T/L] EKF stable. ground_z={z_ground:.3f}m (std={z_std:.4f})")
-                        return z_ground
-                else:
-                    stable_start = None
+
+            problem = None
+            if len(z_hist) < n_win:
+                problem = f"collecting samples ({len(z_hist)}/{n_win})"
+            else:
+                win     = z_hist[-n_win:]
+                z_std   = float(np.std(win))
+                z_pp    = float(max(win) - min(win))
+                z_mean  = float(np.mean(win))
+                if z_std > tol:
+                    problem = f"jitter std={z_std:.3f}m (need <{tol}m)"
+                elif z_pp > self._max_gnd_drift:
+                    problem = (f"drifting {z_pp:.2f}m over "
+                               f"{self._ekf_window_s:.0f}s "
+                               f"(need <={self._max_gnd_drift}m)")
+                elif abs(z_mean) > self._max_ground_z:
+                    problem = (f"z={z_mean:.2f}m but we are ON THE GROUND "
+                               f"(need |z|<={self._max_ground_z}m)")
+
+            now = time.time()
+            if problem is None:
+                if stable_start is None:
+                    stable_start = now
+                elif now - stable_start >= stable_dur:
+                    win = z_hist[-n_win:]
+                    z_ground = float(np.mean(win))
+                    self.get_logger().info(
+                        f"[T/L] EKF stable. ground_z={z_ground:.3f}m "
+                        f"(std={float(np.std(win)):.4f}, "
+                        f"spread={float(max(win) - min(win)):.3f}m)")
+                    return z_ground
+            else:
+                stable_start = None
+                if now - last_report >= 5.0:
+                    last_report = now
+                    self.get_logger().warn(
+                        f"[T/L] EKF not usable yet: {problem} "
+                        f"({timeout - (now - t0):.0f}s left)")
             time.sleep(0.1)
-        z_ground = float(np.mean(z_hist[-10:])) if z_hist else 0.0
-        self.get_logger().warn(
-            f"[T/L] EKF stable timeout — using ground_z={z_ground:.3f}m")
-        return z_ground
+
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[T/L] EKF NEVER BECAME TRUSTWORTHY within the timeout.")
+        if z_hist:
+            win = z_hist[-min(len(z_hist), n_win):]
+            self.get_logger().error(
+                f"[T/L] Last window: z={float(np.mean(win)):.2f}m, "
+                f"spread={float(max(win) - min(win)):.2f}m, "
+                f"std={float(np.std(win)):.3f}m")
+        self.get_logger().error(
+            "[T/L] REFUSING TO FLY on an unverified position estimate — this "
+            "is what put the drone in a tree on 2026-08-27.")
+        self.get_logger().error("=" * 62)
+        return None
 
     # ── Wait for altitude to stabilize ───────────────────────────────────────
     def _wait_altitude(self, target_z, tol=0.15, vz_tol=0.2,
@@ -532,9 +771,24 @@ class TakeoffLandNode(Node):
                 return self._safe_shutdown()
             time.sleep(0.2)
 
+        # 2b. GPS quality gate — BEFORE ground_z/home are latched, because both
+        # are derived from the position estimate we are about to trust for the
+        # whole flight. See _wait_gps_quality() for the incident this prevents.
+        if not self._wait_gps_quality():
+            self.get_logger().error("[T/L] Aborting — GPS not safe to fly on.")
+            return self._safe_shutdown()
+
         # 3. Ground Z
         if self._use_ekf_stable:
-            self._ground_z = self._wait_ekf_stable()
+            ground_z = self._wait_ekf_stable()
+            # None = the estimate never became trustworthy. Refusing here is
+            # the whole point: everything downstream (takeoff_z, home, every
+            # sanity limit) is measured against this number.
+            if ground_z is None:
+                self.get_logger().error(
+                    "[T/L] Aborting — ground_z could not be established.")
+                return self._safe_shutdown()
+            self._ground_z = ground_z
         else:
             self._ground_z = float(self._pos[2])
             self.get_logger().info("[T/L] EKF stable wait skipped.")

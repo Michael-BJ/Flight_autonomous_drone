@@ -135,6 +135,28 @@ def generate_launch_description():
                               description="Minimum voltage (V). 0 = disabled. "
                                           "4S LiPo: ~14.4 V is reasonable."),
         DeclareLaunchArgument("min_battery_pct", default_value="0.0"),
+        # ── GPS quality pre-arm gate (see _wait_gps_quality in the node) ─────
+        DeclareLaunchArgument(
+            "require_gps", default_value="true",
+            description="Refuse to ARM until GPS is genuinely usable "
+                        "(fix_type/satellites/HDOP). Skipped automatically in "
+                        "dry_run. Set false ONLY for indoor flight where a "
+                        "healthy VIO/optical-flow source provides PX4's local "
+                        "position."),
+        DeclareLaunchArgument("min_fix_type",     default_value="3"),
+        DeclareLaunchArgument("min_satellites",   default_value="8"),
+        DeclareLaunchArgument("max_hdop",         default_value="2.0"),
+        DeclareLaunchArgument("gps_wait_timeout", default_value="120.0"),
+        DeclareLaunchArgument("gps_stable_dur",   default_value="5.0"),
+        # ── EKF ground_z trust criteria (see _wait_ekf_stable in the node) ──
+        DeclareLaunchArgument(
+            "max_ground_z", default_value="1.0",
+            description="Max |local-frame z| accepted while ON THE GROUND. A "
+                        "steady but far-from-zero z means the estimate is "
+                        "broken, not stable (2026-08-27: 5.46 m was accepted "
+                        "and the drone hit a tree)."),
+        DeclareLaunchArgument("ekf_window_s",     default_value="5.0"),
+        DeclareLaunchArgument("max_ground_drift", default_value="0.20"),
         DeclareLaunchArgument("rc_override_enabled", default_value="true"),
         DeclareLaunchArgument(
             "verify_rc_override_param", default_value="true",
@@ -376,6 +398,15 @@ def generate_launch_description():
             "max_alt_error":       _f("max_alt_error"),
             "min_battery_v":       _f("min_battery_v"),
             "min_battery_pct":     _f("min_battery_pct"),
+            "require_gps":         _b("require_gps"),
+            "min_fix_type":        _i("min_fix_type"),
+            "min_satellites":      _i("min_satellites"),
+            "max_hdop":            _f("max_hdop"),
+            "gps_wait_timeout":    _f("gps_wait_timeout"),
+            "gps_stable_dur":      _f("gps_stable_dur"),
+            "max_ground_z":        _f("max_ground_z"),
+            "ekf_window_s":        _f("ekf_window_s"),
+            "max_ground_drift":    _f("max_ground_drift"),
             "rc_override_enabled": _b("rc_override_enabled"),
             "verify_rc_override_param": _b("verify_rc_override_param"),
             "descent_speed":       _f("descent_speed"),

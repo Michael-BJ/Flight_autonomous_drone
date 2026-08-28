@@ -98,6 +98,21 @@ def generate_launch_description():
             "max_alt_error", default_value="0.5",
             description="Max z deviation from cruise_z before ABORT (m)."),
         DeclareLaunchArgument("min_battery_v", default_value="0.0"),
+        # ── GPS quality pre-arm gate ─────────────────────────────────────────
+        # Refuses to ARM until GPS is genuinely usable. Skipped automatically
+        # in dry_run (stage 1 runs on a bench indoors). Added after the
+        # 2026-08-27 incident — see _wait_gps_quality() in
+        # fm_inference_real_node.py for the full story.
+        DeclareLaunchArgument(
+            "require_gps", default_value="true",
+            description="false ONLY for indoor flight with a healthy "
+                        "VIO/optical-flow source feeding PX4 local position."),
+        DeclareLaunchArgument("min_satellites", default_value="8"),
+        DeclareLaunchArgument("max_hdop",       default_value="2.0"),
+        # Max |local-frame z| accepted while ON THE GROUND. A steady but
+        # far-from-zero z means the estimate is broken, not stable — on
+        # 2026-08-27 a std-only check accepted 5.46 m for a grounded drone.
+        DeclareLaunchArgument("max_ground_z",   default_value="1.0"),
         DeclareLaunchArgument(
             "ekf_pre_wait_s", default_value="10.0",
             description="Initial GPS/EKF convergence delay before the "
@@ -215,6 +230,10 @@ def generate_launch_description():
                     "max_home_dist":     LaunchConfiguration("max_home_dist"),
                     "max_alt_error":     LaunchConfiguration("max_alt_error"),
                     "min_battery_v":     LaunchConfiguration("min_battery_v"),
+                    "require_gps":       LaunchConfiguration("require_gps"),
+                    "min_satellites":    LaunchConfiguration("min_satellites"),
+                    "max_hdop":          LaunchConfiguration("max_hdop"),
+                    "max_ground_z":      LaunchConfiguration("max_ground_z"),
                     "ekf_pre_wait_s":    LaunchConfiguration("ekf_pre_wait_s"),
                     "cam_x":             LaunchConfiguration("cam_x"),
                     "cam_y":             LaunchConfiguration("cam_y"),

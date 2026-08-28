@@ -36,8 +36,44 @@ from sensor_msgs.msg import (
     Imu, MagneticField, FluidPressure, Temperature, NavSatFix, BatteryState,
 )
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from mavros_msgs.msg import State, Altitude, StatusText, HomePosition
+from mavros_msgs.msg import State, Altitude, StatusText, HomePosition, GPSRAW
 from std_msgs.msg import String
+
+
+# ── GPS quality helpers ───────────────────────────────────────────────────────
+# NavSatFix (/mavros/global_position/global) only carries a coarse
+# status.status (-1 no-fix / 0 fix / 1 SBAS / 2 GBAS). That is NOT enough to
+# decide whether it is safe to fly: it says nothing about satellite count or
+# dilution of precision, and PX4 will happily report a "fix" whose position
+# estimate is still drifting metres. GPSRAW (/mavros/gpsstatus/gps1/raw)
+# carries the fields that actually matter — fix_type, satellites_visible,
+# eph/epv (HDOP/VDOP) — so the reader forwards those too and the flight nodes
+# gate ARM on them. See the 2026-08-27 incident: takeoff with fix_type=0 and
+# 0 satellites, EKF z jumping ±10 m on the ground, drone drifted into a tree.
+#
+# MAVLink "unknown" sentinels that must not be mistaken for good values:
+_SAT_UNKNOWN  = 255           # satellites_visible
+_DOP_UNKNOWN  = 65535         # eph / epv (UINT16_MAX)
+_ACC_UNKNOWN  = 4294967295    # h_acc / v_acc (UINT32_MAX)
+
+
+def _sat_or_none(value):
+    """satellites_visible -> int, or None when the receiver reports 'unknown'."""
+    v = int(value)
+    return None if v == _SAT_UNKNOWN else v
+
+
+def _dop_or_none(value):
+    """eph/epv -> dilution of precision (unitless), or None when unknown.
+    MAVLink transports DOP scaled by 100 (eph=150 -> HDOP 1.5)."""
+    v = int(value)
+    return None if v == _DOP_UNKNOWN else v / 100.0
+
+
+def _acc_m_or_none(value):
+    """h_acc/v_acc (mm) -> metres, or None when unknown."""
+    v = int(value)
+    return None if v == _ACC_UNKNOWN else v / 1000.0
 
 
 # ── Auto-detect FCU URL: serial if available, fallback to SITL UDP ────────────
@@ -131,6 +167,7 @@ class PX4SensorReader(Node):
         self.imu_data        = None  # type: Optional[Imu]
         self.mag_data        = None  # type: Optional[MagneticField]
         self.gps_data        = None  # type: Optional[NavSatFix]
+        self.gps_raw         = None  # type: Optional[GPSRAW]  (fix quality)
         self.local_pose      = None  # type: Optional[PoseStamped]
         self.local_velocity  = None  # type: Optional[TwistStamped]
         self.altitude_data   = None  # type: Optional[Altitude]
@@ -159,6 +196,7 @@ class PX4SensorReader(Node):
         self.create_subscription(FluidPressure, "/mavros/imu/static_pressure",           self._cb_baro,          SENSOR_QOS)
         self.create_subscription(Temperature,   "/mavros/imu/temperature_imu",           self._cb_temperature,   SENSOR_QOS)
         self.create_subscription(NavSatFix,     "/mavros/global_position/global",        self._cb_gps,           SENSOR_QOS)
+        self.create_subscription(GPSRAW,        "/mavros/gpsstatus/gps1/raw",            self._cb_gps_raw,       SENSOR_QOS)
         self.create_subscription(PoseStamped,   "/mavros/local_position/pose",           self._cb_local_pose,    SENSOR_QOS)
         self.create_subscription(TwistStamped,  "/mavros/local_position/velocity_local", self._cb_local_velocity,SENSOR_QOS)
         self.create_subscription(BatteryState,  "/mavros/battery",                       self._cb_battery,       SENSOR_QOS)
@@ -216,6 +254,7 @@ class PX4SensorReader(Node):
     def _cb_baro(self, msg):           self.baro_pressure   = msg
     def _cb_temperature(self, msg):    self.imu_temperature = msg
     def _cb_gps(self, msg):            self.gps_data        = msg
+    def _cb_gps_raw(self, msg):        self.gps_raw         = msg
     def _cb_local_pose(self, msg):     self.local_pose      = msg
     def _cb_local_velocity(self, msg): self.local_velocity  = msg
     def _cb_battery(self, msg):        self.battery_status  = msg
@@ -292,6 +331,21 @@ class PX4SensorReader(Node):
         else:
             self.get_logger().warn("[GPS]  No data (indoor? -> needs VIO/optical-flow for OFFBOARD)")
 
+        # GPS quality, printed every second so a bad sky view is obvious on the
+        # terminal BEFORE anyone starts a mission (see the GPS helpers above).
+        if self.gps_raw:
+            sats = _sat_or_none(self.gps_raw.satellites_visible)
+            hdop = _dop_or_none(self.gps_raw.eph)
+            fix  = int(self.gps_raw.fix_type)
+            fix_name = {0: "NO GPS", 1: "NO FIX", 2: "2D", 3: "3D",
+                        4: "DGPS", 5: "RTK-float", 6: "RTK-fixed"}.get(fix, str(fix))
+            warn = "  <-- NOT SAFE TO FLY" if (fix < 3 or (sats or 0) < 6) else ""
+            self.get_logger().info("[GPS+] fix={0}  sats={1}  HDOP={2}{3}".format(
+                fix_name,
+                "?" if sats is None else sats,
+                "?" if hdop is None else "{0:.2f}".format(hdop),
+                warn))
+
         if self.local_velocity:
             v = self.local_velocity.twist.linear
             spd = math.sqrt(v.x*v.x + v.y*v.y + v.z*v.z)
@@ -339,6 +393,19 @@ class PX4SensorReader(Node):
             # flat key for mode_monitor ("NONE" when no fix)
             snapshot["gps_fix"] = {-1: "NONE", 0: "FIX", 1: "SBAS", 2: "GBAS"}.get(
                 self.gps_data.status.status, "?")
+
+        # GPS *quality* — what the pre-arm gate in fm_inference_real_node
+        # actually reads. Kept separate from the "gps" block above because that
+        # one is only position, and a position is published even when it is
+        # garbage.
+        if self.gps_raw:
+            snapshot["gps_quality"] = {
+                "fix_type":   int(self.gps_raw.fix_type),
+                "satellites": _sat_or_none(self.gps_raw.satellites_visible),
+                "hdop":       _dop_or_none(self.gps_raw.eph),
+                "vdop":       _dop_or_none(self.gps_raw.epv),
+                "h_acc_m":    _acc_m_or_none(self.gps_raw.h_acc),
+            }
         if self.altitude_data:
             terrain = self.altitude_data.terrain
             snapshot["altitude"] = {
