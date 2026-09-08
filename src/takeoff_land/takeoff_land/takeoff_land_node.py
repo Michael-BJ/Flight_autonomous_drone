@@ -61,6 +61,25 @@ from rcl_interfaces.srv import GetParameters  # NEW
 from std_msgs.msg import String
 
 
+# ── Terminal monitoring ──────────────────────────────────────────────────────
+# The operator watches this terminal while a pilot holds the RC. Which PHASE
+# the drone is in has to be readable at a glance, not reconstructed from a
+# stream of INFO lines that all look alike. These names are a MONITORING view
+# of the mission — they are announced alongside the real FSM state in
+# self._mission and never used to make a decision.
+_PHASE_ORDER = ["PREFLIGHT", "READY", "ARMING", "TAKEOFF", "HOVER", "LANDING"]
+_PHASE_COLOR = {
+    "PREFLIGHT": "cyan",  "READY":   "green",  "ARMING":  "yellow",
+    "TAKEOFF":   "yellow", "HOVER":  "blue",   "LANDING": "cyan",
+    "DONE":      "green", "ABORT":   "red",
+}
+_ANSI = {
+    "reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
+    "red": "\033[91m", "green": "\033[92m", "yellow": "\033[93m",
+    "blue": "\033[94m", "cyan": "\033[96m", "white": "\033[97m",
+}
+
+
 class TakeoffLandNode(Node):
 
     STATE_IDLE    = "IDLE"
@@ -126,6 +145,10 @@ class TakeoffLandNode(Node):
         self.declare_parameter("ekf_window_s",       5.0)   # s of samples for std/spread
         self.declare_parameter("max_ground_drift",   0.20)  # m peak-to-peak within window
 
+        # ── Terminal monitoring (see _announce_phase) ────────────────────────
+        self.declare_parameter("status_period_s",    2.0)   # status line cadence
+        self.declare_parameter("color_output",      True)   # ANSI colour
+
         self._alt             = float(self.get_parameter("target_alt").value)
         self._hover_time      = float(self.get_parameter("hover_time").value)
         self._cmd_hz          = int(self.get_parameter("cmd_hz").value)
@@ -149,6 +172,8 @@ class TakeoffLandNode(Node):
         self._max_ground_z    = float(self.get_parameter("max_ground_z").value)
         self._ekf_window_s    = float(self.get_parameter("ekf_window_s").value)
         self._max_gnd_drift   = float(self.get_parameter("max_ground_drift").value)
+        self._status_period   = float(self.get_parameter("status_period_s").value)
+        self._color           = bool(self.get_parameter("color_output").value)
 
         # ── Drone state (filled from /px4/state & /px4/sensors) ───────────────
         self._connected = False
@@ -186,6 +211,12 @@ class TakeoffLandNode(Node):
         self._home_yaw  = 0.0
         self._mission   = self.STATE_IDLE
 
+        # ── Phase / monitoring state ─────────────────────────────────────────
+        self._phase_idx   = 0
+        self._phase_name  = "PREFLIGHT"
+        self._t_run_start = time.time()   # T+ shown on every banner/status line
+        self._t_phase     = time.time()
+
         # ── Pub / sub / service ────────────────────────────────────────────────
         self._pub_sp = self.create_publisher(
             PositionTarget, "/mavros/setpoint_raw/local", 10)
@@ -198,7 +229,8 @@ class TakeoffLandNode(Node):
 
         # ── Timers ─────────────────────────────────────────────────────────────
         self._sp_timer  = self.create_timer(1.0 / self._cmd_hz, self._publish_setpoint)
-        self._log_timer = self.create_timer(2.0, self._print_status)
+        self._log_timer = self.create_timer(
+            self._status_period, self._print_status)
 
         self.get_logger().info("=" * 62)
         self.get_logger().info(
@@ -342,6 +374,7 @@ class TakeoffLandNode(Node):
         """Emergency abort when flight state is unreasonable. Hands off to AUTO.LAND."""
         self._stream_on           = False
         self._in_offboard_mission = False
+        self._announce_phase("ABORT", f"SANITY: {reason}", warn=True)
         self.get_logger().error("=" * 62)
         self.get_logger().error(f"[SANITY] ABORT: {reason}")
         self.get_logger().error("[SANITY] Switching to AUTO.LAND for safety.")
@@ -388,6 +421,8 @@ class TakeoffLandNode(Node):
         """Stop all setpoints immediately and shut down. RC pilot is in control."""
         self._stream_on           = False
         self._in_offboard_mission = False
+        self._announce_phase(
+            "ABORT", "RC OVERRIDE — pilot has control", warn=True)
         self.get_logger().error("=" * 62)
         self.get_logger().error("[T/L] MISSION ABORTED — RC pilot has control.")
         self.get_logger().error("[T/L] Setpoints stopped. Do NOT restart mission")
@@ -404,6 +439,7 @@ class TakeoffLandNode(Node):
         to stop commanding it and let PX4's own failsafe take over."""
         self._stream_on           = False
         self._in_offboard_mission = False
+        self._announce_phase("ABORT", "FCU LINK LOST", warn=True)
         self.get_logger().error("=" * 62)
         self.get_logger().error("[T/L] MISSION ABORTED — FCU link lost.")
         self.get_logger().error("[T/L] Setpoints stopped. PX4 failsafe should take over.")
@@ -734,16 +770,107 @@ class TakeoffLandNode(Node):
             time.sleep(0.1)
         return False
 
+    # ── Terminal monitoring: phase banners + rich status line ────────────────
+
+    def _c(self, code: str) -> str:
+        """ANSI escape, or '' when colour is disabled."""
+        return _ANSI.get(code, "") if self._color else ""
+
+    def _elapsed(self) -> str:
+        s = int(time.time() - self._t_run_start)
+        return f"T+{s // 60:02d}:{s % 60:02d}"
+
+    def _emit(self, text: str, warn: bool = False):
+        """Log at INFO or WARN from two SEPARATE call sites.
+
+        rclpy caches logger state per call site and raises 'Logger severity
+        cannot be changed between calls' if one site is used at two
+        severities. Selecting the method into a variable and calling it from a
+        single line does exactly that. Keep these two calls on their own
+        lines."""
+        if warn:
+            self.get_logger().warn(text)
+        else:
+            self.get_logger().info(text)
+
+    def _announce_phase(self, name: str, detail: str = "", warn: bool = False):
+        """Unmissable banner on every mission-phase transition."""
+        prev = self._phase_name
+        self._phase_name = name
+        self._t_phase    = time.time()
+        if name in _PHASE_ORDER:
+            self._phase_idx = _PHASE_ORDER.index(name) + 1
+        col  = self._c(_PHASE_COLOR.get(name, "white"))
+        bold = self._c("bold")
+        rst  = self._c("reset")
+        step = (f"[{self._phase_idx}/{len(_PHASE_ORDER)}] "
+                if name in _PHASE_ORDER else "")
+        self._emit(f"{col}{'=' * 62}{rst}", warn)
+        self._emit(f"{col}{bold}  >>> {step}{name}{rst}"
+                   f"{self._c('dim')}   (from {prev})   {self._elapsed()}{rst}",
+                   warn)
+        if detail:
+            self._emit(f"{col}      {detail}{rst}", warn)
+        self._emit(f"{col}{'=' * 62}{rst}", warn)
+
+    def _phase_note(self, text: str, warn: bool = False):
+        """One-line sub-status inside the current phase (no banner)."""
+        col = self._c(_PHASE_COLOR.get(self._phase_name, "white"))
+        rst = self._c("reset")
+        self._emit(f"{col}[{self._phase_name}]{rst} {text}", warn)
+
     def _print_status(self):
+        """Flight-monitoring status line.
+
+        Shows PHYSICAL altitude (z - ground_z) as well as raw local-frame z:
+        raw z alone is meaningless to an operator standing next to the drone,
+        and misreading it is exactly what went unnoticed on 2026-08-27."""
+        col  = self._c(_PHASE_COLOR.get(self._phase_name, "white"))
+        rst  = self._c("reset")
+        bold = self._c("bold")
         if not self._connected:
-            self.get_logger().warn("[T/L] Waiting for /px4/state (reader & MAVROS)...")
+            self.get_logger().warn(
+                f"[{self._elapsed()}] {self._phase_name} — waiting for "
+                "/px4/state (px4_sensor_reader & MAVROS)...")
             return
+
+        alt = float(self._pos[2]) - self._ground_z
+        parts = [f"alt={alt:5.2f}m", f"z={float(self._pos[2]):6.2f}m",
+                 f"vz={float(self._vel[2]):+5.2f}"]
+
+        if self._home_x or self._home_y:
+            d_home = math.sqrt((float(self._pos[0]) - self._home_x) ** 2
+                               + (float(self._pos[1]) - self._home_y) ** 2)
+            mark = ""
+            if self._max_pos_error > 0.0:
+                frac = d_home / self._max_pos_error
+                if frac > 0.8:
+                    mark = self._c("red") + "!" + rst
+                elif frac > 0.6:
+                    mark = self._c("yellow") + "." + rst
+            parts.append(f"drift={d_home:5.2f}m{mark}")
+
+        parts.append(f"sp_z={float(self._sp_z):5.2f}")
+        arm_c = self._c("red") if self._armed else self._c("green")
+        parts.append(f"{arm_c}{'ARMED' if self._armed else 'disarmed'}{rst}")
+        parts.append(f"mode={self._mode or '?'}")
+
+        if self._gps_q:
+            sats = self._gps_q.get("satellites")
+            hdop = self._gps_q.get("hdop")
+            parts.append(f"gps={'?' if sats is None else sats}sat/"
+                         f"{'?' if hdop is None else f'{float(hdop):.1f}'}")
+
         self.get_logger().info(
-            f"[T/L] {self._mission:8s} mode={self._mode:10s} armed={self._armed} "
-            f"z={self._pos[2]:.2f}m vz={self._vel[2]:+.2f} sp_z={self._sp_z:.2f}")
+            f"{col}{bold}[{self._elapsed()}] {self._phase_name:<9s}{rst} | "
+            + " | ".join(parts))
 
     # ── Mission sequence (separate thread) ────────────────────────────────────
     def run_sequence(self):
+        self._t_run_start = time.time()
+        self._announce_phase(
+            "PREFLIGHT",
+            "FCU -> COM_RC_OVERRIDE -> local pose -> GPS gate -> ground_z")
         # 1. Wait for connection
         self.get_logger().info("[T/L] Waiting for MAVROS connection (via /px4/state)...")
         t0 = time.time()
@@ -804,12 +931,33 @@ class TakeoffLandNode(Node):
 
         self._set_sp(self._home_x, self._home_y, self._ground_z, self._home_yaw)
 
+        # 4b. Everything that can be verified BEFORE the propellers spin has
+        # now been verified. Announce it as its own phase so the operator has
+        # one unambiguous "the drone is about to fly" moment to react to,
+        # instead of having to notice it from the log flow.
+        self._announce_phase(
+            "READY",
+            f"DRONE READY TO LAUNCH — GPS ok, ground_z={self._ground_z:.2f} m, "
+            f"home=({self._home_x:.2f},{self._home_y:.2f}), "
+            f"takeoff_z={takeoff_z:.2f} m (physical ~{self._alt:.1f} m)")
+        self._phase_note(
+            f"hover {self._hover_time:.0f} s, then descend at "
+            f"{self._descent_speed:.2f} m/s to {self._land_handoff:.2f} m "
+            f"and hand off to AUTO.LAND")
+        self._phase_note(
+            "PILOT: hold the RC with the mode switch ready. Next step ARMS "
+            "the drone.", warn=True)
+
         # 5. Warm-up setpoint stream
-        self.get_logger().info("[T/L] Warming up setpoint stream (~2s)...")
+        self._announce_phase(
+            "ARMING",
+            "PROPELLERS WILL SPIN — streaming setpoints, then ARM + OFFBOARD",
+            warn=True)
+        self._phase_note("warming up setpoint stream (~2s)...")
         time.sleep(2.0)
 
         # 6. ARM
-        self.get_logger().info("[T/L] Arming...")
+        self._phase_note("sending ARM...")
         t0 = time.time(); armed = False
         while rclpy.ok() and time.time() - t0 < self._arm_timeout:
             if self._arm(True):
@@ -841,7 +989,11 @@ class TakeoffLandNode(Node):
 
         # 8. TAKEOFF
         self._mission = self.STATE_TAKEOFF
-        self.get_logger().info(f"[T/L] TAKEOFF -> z={takeoff_z:.2f}m")
+        self._announce_phase(
+            "TAKEOFF",
+            f"climbing to z={takeoff_z:.2f} m (physical ~{self._alt:.1f} m), "
+            f"XY pinned to home. Abort limits: drift "
+            f"{self._max_pos_error:.1f} m, alt err {self._max_alt_error:.1f} m")
         self._set_sp(self._home_x, self._home_y, takeoff_z, self._home_yaw)
         stable = self._wait_altitude(takeoff_z, tol=0.15, timeout=30.0)
         if self._rc_override:
@@ -851,13 +1003,20 @@ class TakeoffLandNode(Node):
         if not rclpy.ok():
             return
         if not stable:
-            self.get_logger().warn("[T/L] Takeoff not yet stable — continuing carefully.")
+            self._phase_note(
+                "altitude never became stable within 30 s — continuing "
+                "carefully (mission proceeds by design)", warn=True)
         else:
-            self.get_logger().info(f"[T/L] Takeoff OK. z={self._pos[2]:.2f}m")
+            self._phase_note(
+                f"reached target altitude, alt="
+                f"{float(self._pos[2]) - self._ground_z:.2f} m")
 
         # 9. HOVER
         self._mission = self.STATE_HOVER
-        self.get_logger().info(f"[T/L] HOVER for {self._hover_time:.0f}s...")
+        self._announce_phase(
+            "HOVER",
+            f"holding home for {self._hover_time:.0f} s at "
+            f"z={takeoff_z:.2f} m before landing")
         t_h = time.time()
         while rclpy.ok() and time.time() - t_h < self._hover_time:
             if self._rc_override:
@@ -867,14 +1026,22 @@ class TakeoffLandNode(Node):
             if not self._sanity_check(takeoff_z, check_alt=True):
                 return
             self._set_sp(self._home_x, self._home_y, takeoff_z, self._home_yaw)
+            self.get_logger().info(
+                f"{self._c('blue')}[HOVER]{self._c('reset')} "
+                f"landing in {self._hover_time - (time.time() - t_h):4.1f} s...",
+                throttle_duration_sec=2.0)
             if not self._armed:
-                self.get_logger().error("[T/L] Unexpected disarm during hover — aborting.")
+                self._announce_phase(
+                    "ABORT", "unexpected DISARM during hover", warn=True)
                 return self._safe_shutdown()
             time.sleep(0.1)
 
         # 10. LANDING
         self._mission = self.STATE_LANDING
-        self.get_logger().info("[T/L] LANDING (controlled descent)...")
+        self._announce_phase(
+            "LANDING",
+            f"controlled descent at {self._descent_speed:.2f} m/s to "
+            f"{self._land_handoff:.2f} m above ground, then AUTO.LAND")
         self._controlled_descent(takeoff_z)
         if self._rc_override:
             return self._rc_override_abort()
@@ -885,24 +1052,30 @@ class TakeoffLandNode(Node):
         self._in_offboard_mission = False
 
         if self._auto_land:
-            self.get_logger().info("[T/L] Handing touchdown to AUTO.LAND...")
+            self._phase_note(
+                "handing touchdown to PX4 AUTO.LAND — this node stops "
+                "commanding the drone from here", warn=True)
             self._stream_on = False
             time.sleep(0.2)
             self._set_mode("AUTO.LAND")
             t0 = time.time()
             while rclpy.ok() and self._armed and time.time() - t0 < 20.0:
+                self.get_logger().info(
+                    f"{self._c('cyan')}[LANDING]{self._c('reset')} AUTO.LAND "
+                    f"in progress, waiting for auto-disarm... "
+                    f"({20.0 - (time.time() - t0):4.1f} s left)",
+                    throttle_duration_sec=2.0)
                 time.sleep(0.3)
             if self._armed:
-                self.get_logger().warn("[T/L] Land detector slow — forcing disarm.")
+                self._phase_note("land detector slow — forcing disarm", warn=True)
                 self._arm(False)
         else:
-            self.get_logger().info("[T/L] Manual disarm near ground...")
+            self._phase_note("manual disarm near ground...")
             self._arm(False)
 
         self._mission = self.STATE_DONE
-        self.get_logger().info("=" * 62)
-        self.get_logger().info("[T/L] MISSION COMPLETE. Drone landed & disarmed.")
-        self.get_logger().info("=" * 62)
+        self._announce_phase(
+            "DONE", "MISSION COMPLETE — drone landed & disarmed")
         self._safe_shutdown()
 
     def _controlled_descent(self, from_z: float):

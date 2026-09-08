@@ -78,6 +78,65 @@ def generate_launch_description():
         DeclareLaunchArgument("target_alt", default_value="1.5"),
         DeclareLaunchArgument("v_max",      default_value="0.5"),
         DeclareLaunchArgument("mission_timeout_s", default_value="180.0"),
+        DeclareLaunchArgument(
+            "hover_settle_s", default_value="5.0",
+            description="Seconds hovering over home after reaching cruise "
+                        "altitude, before the octomap is wiped and the FM "
+                        "loop starts."),
+
+        # ── Terminal monitoring ──────────────────────────────────────────────
+        DeclareLaunchArgument("status_period_s",     default_value="2.0"),
+        DeclareLaunchArgument("color_output",        default_value="true"),
+        DeclareLaunchArgument("warn_replan_overrun", default_value="true"),
+
+        # ── Safety parameters that used to be LOCKED here ────────────────────
+        # These are declared in fm_real.launch.py but were not forwarded, so
+        # passing them to fm_all did NOTHING — ros2 launch ignores an
+        # undeclared argument silently, with no error and no warning. That is
+        # the worst possible failure mode for a safety switch: the operator
+        # believes a guard is on when it is not. Every default below is copied
+        # verbatim from fm_real.launch.py, so behaviour is unchanged unless
+        # you explicitly pass one.
+        DeclareLaunchArgument(
+            "use_safety_guards", default_value="false",
+            description="TRUE = escape maneuvers ON (guard fires -> the drone "
+                        "flies a 0.4 m/s escape). FALSE = guards still fire "
+                        "but only invalidate + hover. FALSE is the 'fair' "
+                        "ablation mode that matches simulation, so keep it "
+                        "false if real-flight numbers must stay comparable."),
+        DeclareLaunchArgument(
+            "use_lookahead_guard", default_value="true",
+            description="Keeps guards 1 & 2 alive while use_safety_guards is "
+                        "false. If BOTH are false there is NO guard at all."),
+        DeclareLaunchArgument("guard_clearance",    default_value="0.60"),
+        DeclareLaunchArgument("hard_clearance",     default_value="0.55"),
+        DeclareLaunchArgument("collision_cost_tol", default_value="20.0"),
+        DeclareLaunchArgument("max_plan_cost",      default_value="50.0"),
+        DeclareLaunchArgument("planning_time_ahead", default_value="0.3"),
+        DeclareLaunchArgument("speed_margin_k",     default_value="0.25"),
+        DeclareLaunchArgument("use_speed_limit",    default_value="true"),
+        DeclareLaunchArgument("blind_abort_s",      default_value="10.0"),
+        DeclareLaunchArgument("stuck_abort_s",      default_value="60.0"),
+        DeclareLaunchArgument("depth_max_lag",      default_value="0.5"),
+        DeclareLaunchArgument(
+            "min_battery_pct", default_value="0.0",
+            description="0 = battery percentage check DISABLED."),
+        DeclareLaunchArgument("rc_override_enabled",      default_value="true"),
+        DeclareLaunchArgument("verify_rc_override_param", default_value="true"),
+        DeclareLaunchArgument(
+            "write_px4_params", default_value="false",
+            description="Must be TRUE for px4_vel_cap to be applied at all. "
+                        "While false, PX4 keeps its stock MPC_XY_VEL_MAX "
+                        "(12 m/s) no matter what px4_vel_cap says."),
+        DeclareLaunchArgument("px4_vel_cap",        default_value="2.0"),
+        DeclareLaunchArgument("descent_speed",      default_value="0.3"),
+        DeclareLaunchArgument("land_handoff_alt",   default_value="0.25"),
+        DeclareLaunchArgument("auto_land_mode",     default_value="true"),
+        DeclareLaunchArgument("min_fix_type",       default_value="3"),
+        DeclareLaunchArgument("gps_wait_timeout",   default_value="120.0"),
+        DeclareLaunchArgument("gps_stable_dur",     default_value="5.0"),
+        DeclareLaunchArgument("ekf_window_s",       default_value="5.0"),
+        DeclareLaunchArgument("max_ground_drift",   default_value="0.20"),
 
         # ── Safety ───────────────────────────────────────────────────────────
         DeclareLaunchArgument(
@@ -222,6 +281,10 @@ def generate_launch_description():
                     "target_alt":        LaunchConfiguration("target_alt"),
                     "v_max":             LaunchConfiguration("v_max"),
                     "mission_timeout_s": LaunchConfiguration("mission_timeout_s"),
+                    "hover_settle_s":    LaunchConfiguration("hover_settle_s"),
+                    "status_period_s":   LaunchConfiguration("status_period_s"),
+                    "color_output":      LaunchConfiguration("color_output"),
+                    "warn_replan_overrun": LaunchConfiguration("warn_replan_overrun"),
                     "dry_run":           LaunchConfiguration("dry_run"),
                     "safe_dis":          LaunchConfiguration("safe_dis"),
                     "fence_fwd":         LaunchConfiguration("fence_fwd"),
@@ -240,6 +303,33 @@ def generate_launch_description():
                     "cam_z":             LaunchConfiguration("cam_z"),
                     "gate_enabled":      LaunchConfiguration("gate_enabled"),
                     "gate_alt_margin":   LaunchConfiguration("gate_alt_margin"),
+                    # ── safety parameters that used to be locked here ────────
+                    "use_safety_guards":   LaunchConfiguration("use_safety_guards"),
+                    "use_lookahead_guard": LaunchConfiguration("use_lookahead_guard"),
+                    "guard_clearance":     LaunchConfiguration("guard_clearance"),
+                    "hard_clearance":      LaunchConfiguration("hard_clearance"),
+                    "collision_cost_tol":  LaunchConfiguration("collision_cost_tol"),
+                    "max_plan_cost":       LaunchConfiguration("max_plan_cost"),
+                    "planning_time_ahead": LaunchConfiguration("planning_time_ahead"),
+                    "speed_margin_k":      LaunchConfiguration("speed_margin_k"),
+                    "use_speed_limit":     LaunchConfiguration("use_speed_limit"),
+                    "blind_abort_s":       LaunchConfiguration("blind_abort_s"),
+                    "stuck_abort_s":       LaunchConfiguration("stuck_abort_s"),
+                    "depth_max_lag":       LaunchConfiguration("depth_max_lag"),
+                    "min_battery_pct":     LaunchConfiguration("min_battery_pct"),
+                    "rc_override_enabled": LaunchConfiguration("rc_override_enabled"),
+                    "verify_rc_override_param":
+                        LaunchConfiguration("verify_rc_override_param"),
+                    "write_px4_params":    LaunchConfiguration("write_px4_params"),
+                    "px4_vel_cap":         LaunchConfiguration("px4_vel_cap"),
+                    "descent_speed":       LaunchConfiguration("descent_speed"),
+                    "land_handoff_alt":    LaunchConfiguration("land_handoff_alt"),
+                    "auto_land_mode":      LaunchConfiguration("auto_land_mode"),
+                    "min_fix_type":        LaunchConfiguration("min_fix_type"),
+                    "gps_wait_timeout":    LaunchConfiguration("gps_wait_timeout"),
+                    "gps_stable_dur":      LaunchConfiguration("gps_stable_dur"),
+                    "ekf_window_s":        LaunchConfiguration("ekf_window_s"),
+                    "max_ground_drift":    LaunchConfiguration("max_ground_drift"),
                 }.items(),
             ),
         ],

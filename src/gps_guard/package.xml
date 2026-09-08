@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gps_guard</name>
+  <version>0.1.0</version>
+  <description>Standalone GPS pre-flight / stability checker for PX4 via MAVROS.
+  Watches the GPS quality block published by a px4_sensor_reader (takeoff_land
+  or fm_deploy) and publishes a single go/no-go verdict on /px4/gps_ready.
+  Split out of takeoff_land after the 2026-08-27 tree incident so the check is
+  reusable and independently managed.</description>
+  <maintainer email="michaelbryanjahanto@gmail.com">michael</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <!-- gps_guard_all.launch.py wraps takeoff_land's MAVROS + px4_sensor_reader -->
+  <exec_depend>takeoff_land</exec_depend>
+  <exec_depend>mavros</exec_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -223,6 +223,20 @@ def generate_launch_description():
         DeclareLaunchArgument("use_efficiency_ranking", default_value="false"),
         DeclareLaunchArgument("candidate_log_path",     default_value=""),
         DeclareLaunchArgument("publish_markers",        default_value="true"),
+        # ── Terminal monitoring (see fm_inference_real_node._announce_phase) ──
+        DeclareLaunchArgument(
+            "status_period_s", default_value="2.0",
+            description="How often the [T+mm:ss] PHASE status line is printed."),
+        DeclareLaunchArgument(
+            "color_output", default_value="true",
+            description="ANSI colour in the terminal. Set false when piping "
+                        "the log to a file."),
+        DeclareLaunchArgument(
+            "warn_replan_overrun", default_value="true",
+            description="Warn when a replan takes longer than "
+                        "planning_time_ahead — that parameter IS the "
+                        "compute-time budget, and overrunning it installs a "
+                        "trajectory the drone has already passed."),
 
         # ── Camera & map ─────────────────────────────────────────────────────
         DeclareLaunchArgument("depth_topic",
@@ -436,6 +450,9 @@ def generate_launch_description():
             "candidate_log_path":  LaunchConfiguration("candidate_log_path"),
             "publish_markers":     _b("publish_markers"),
             "marker_frame":        "odom",
+            "status_period_s":     _f("status_period_s"),
+            "color_output":        _b("color_output"),
+            "warn_replan_overrun": _b("warn_replan_overrun"),
         }],
     )
 

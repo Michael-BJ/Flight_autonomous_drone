@@ -12,7 +12,10 @@ USAGE:
 
 PARAMS: fcu_url, target_alt, hover_time, cmd_hz, descent_speed, auto_land_mode,
         land_handoff_alt, rc_override_enabled, verify_rc_override_param,
-        max_pos_error, max_vz, max_alt_error
+        max_pos_error, max_vz, max_alt_error,
+        require_gps, min_fix_type, min_satellites, max_hdop, gps_wait_timeout,
+        gps_stable_dur, max_ground_z, ekf_window_s, max_ground_drift,
+        status_period_s, color_output
 
 START ORDER (with delays):
     t=0   : kill stale processes + start MAVROS
@@ -90,6 +93,13 @@ def generate_launch_description():
                     "not stable (2026-08-27: 5.46 m accepted, drone hit a tree).")
     arg_ekf_win   = DeclareLaunchArgument("ekf_window_s",     default_value="5.0")
     arg_gnd_drift = DeclareLaunchArgument("max_ground_drift", default_value="0.20")
+    # ── Terminal monitoring (see takeoff_land_node._announce_phase) ──────────
+    arg_status_p  = DeclareLaunchArgument(
+        "status_period_s", default_value="2.0",
+        description="How often the [T+mm:ss] PHASE status line is printed.")
+    arg_color     = DeclareLaunchArgument(
+        "color_output", default_value="true",
+        description="ANSI colour. Set false when piping the log to a file.")
 
     fcu_url       = LaunchConfiguration("fcu_url")
     target_alt    = LaunchConfiguration("target_alt")
@@ -112,6 +122,8 @@ def generate_launch_description():
     max_ground_z  = LaunchConfiguration("max_ground_z")
     ekf_window_s  = LaunchConfiguration("ekf_window_s")
     max_gnd_drift = LaunchConfiguration("max_ground_drift")
+    status_period = LaunchConfiguration("status_period_s")
+    color_output  = LaunchConfiguration("color_output")
 
     kill_old = OpaqueFunction(function=_kill_stale)
 
@@ -173,6 +185,8 @@ def generate_launch_description():
                     "max_ground_z":        ParameterValue(max_ground_z, value_type=float),
                     "ekf_window_s":        ParameterValue(ekf_window_s, value_type=float),
                     "max_ground_drift":    ParameterValue(max_gnd_drift, value_type=float),
+                    "status_period_s":     ParameterValue(status_period, value_type=float),
+                    "color_output":        ParameterValue(color_output,  value_type=bool),
                     "use_ekf_stable":      True,
                 }],
             ),
@@ -183,6 +197,6 @@ def generate_launch_description():
         arg_fcu_url, arg_alt, arg_hover, arg_cmd_hz, arg_descent, arg_auto_land,
         arg_handoff, arg_rc_ovr, arg_verify_rc, arg_max_pos, arg_max_vz, arg_max_alt,
         arg_req_gps, arg_min_fix, arg_min_sats, arg_max_hdop, arg_gps_to, arg_gps_dur,
-        arg_max_gnd_z, arg_ekf_win, arg_gnd_drift,
+        arg_max_gnd_z, arg_ekf_win, arg_gnd_drift, arg_status_p, arg_color,
         kill_old, mavros_node, reader, takeoff_node,
     ])

@@ -76,6 +76,25 @@ sys.path.insert(0, _THIS_DIR)
 from fm_inference_node import FMInferenceNode
 
 
+# ── Terminal monitoring (hardware only) ──────────────────────────────────────
+# The mission FSM in fm_inference_base has no HOVER state: the settle window
+# after takeoff runs while still in STATE_TAKEOFF, and it is silent for
+# hover_settle_s + ~1.5 s. From the ground that is indistinguishable from a
+# hang. These phase names are a MONITORING view of the mission — they are
+# announced alongside the real FSM state, never used to make a decision.
+_PHASE_ORDER = ["PREFLIGHT", "ARMING", "TAKEOFF", "HOVER", "FLYING", "LANDING"]
+_PHASE_COLOR = {
+    "PREFLIGHT": "cyan",   "ARMING":  "yellow", "TAKEOFF": "yellow",
+    "HOVER":     "blue",   "FLYING":  "green",  "LANDING": "cyan",
+    "DONE":      "green",  "ABORT":   "red",    "DRY RUN": "blue",
+}
+_ANSI = {
+    "reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
+    "red": "\033[91m", "green": "\033[92m", "yellow": "\033[93m",
+    "blue": "\033[94m", "cyan": "\033[96m", "white": "\033[97m",
+}
+
+
 class FMInferenceRealNode(FMInferenceNode):
 
     # ── Construction ─────────────────────────────────────────────────────────
@@ -151,6 +170,18 @@ class FMInferenceRealNode(FMInferenceNode):
         # parameters.
         self.declare_parameter("write_px4_params", False)
         self.declare_parameter("ekf2_hgt_ref",        -1)   # <0 = not written
+        # ── Terminal monitoring (hardware only — see _announce_phase) ────────
+        # In the field the operator watches this terminal while a pilot holds
+        # the RC. Which PHASE the drone is in has to be readable at a glance,
+        # not reconstructed from a stream of INFO lines that all look alike.
+        self.declare_parameter("status_period_s",    2.0)   # status line cadence
+        self.declare_parameter("color_output",      True)   # ANSI colour
+        # Warn when a replan overruns planning_time_ahead. That parameter IS
+        # the compute-time budget: the new trajectory starts at where the
+        # drone was predicted to be planning_time_ahead into the future, but
+        # it is played back from the moment it is installed. Overrunning it
+        # means the trajectory is born already behind the drone.
+        self.declare_parameter("warn_replan_overrun", True)
         # Delay before starting to measure EKF Z std. In simulation the EKF
         # converges instantly (doesn't need this). In the field, the EKF
         # only starts stabilizing a few seconds after PX4 gets a GPS/VIO
@@ -190,6 +221,9 @@ class FMInferenceRealNode(FMInferenceNode):
         self._write_px4   = bool(self.get_parameter("write_px4_params").value)
         self._ekf2_hgt    = int(self.get_parameter("ekf2_hgt_ref").value)
         self._ekf_pre_wait = float(self.get_parameter("ekf_pre_wait_s").value)
+        self._status_period = float(self.get_parameter("status_period_s").value)
+        self._color       = bool(self.get_parameter("color_output").value)
+        self._warn_overrun = bool(self.get_parameter("warn_replan_overrun").value)
 
         # ── Safety state ─────────────────────────────────────────────────────
         self._rc_override = False
@@ -213,10 +247,27 @@ class FMInferenceRealNode(FMInferenceNode):
         # "not proven good" rather than as "fine".
         self._gps_q    = None
 
+        # ── Phase / monitoring state ─────────────────────────────────────────
+        self._phase_idx    = 0
+        self._phase_name   = "PREFLIGHT"
+        self._t_run_start  = time.time()   # T+ shown on every banner/status
+        self._t_phase      = time.time()
+        self._last_replan_ms = 0.0         # filled by the _replan() wrapper
+        self._replan_slow_n  = 0           # how many overran the budget
+
         # Watchdog separate from the mission loop: the mission loop can be
         # blocked inside _replan (can take hundreds of ms), while geofence/
         # battery violations must be detected on a steady cadence.
         self._wd_timer = self.create_timer(0.2, self._watchdog)
+
+        # Replace the base's 5 s status timer: 5 s is too coarse to monitor a
+        # flight by. The callback itself is this class's _print_status().
+        try:
+            self._status_timer.cancel()
+        except Exception:
+            pass
+        self._status_timer = self.create_timer(
+            self._status_period, self._print_status)
 
         self.get_logger().info("=" * 62)
         self.get_logger().info("  MODE: REAL DRONE (fm_inference_real_node)")
@@ -249,6 +300,156 @@ class FMInferenceRealNode(FMInferenceNode):
                 "  DRY RUN       : NOT arming, NOT sending setpoints. "
                 "Full pipeline still runs (safe for bench testing).")
         self.get_logger().info("=" * 62)
+
+    # ── Terminal monitoring: phase banners + rich status line ─────────────────
+    #
+    # Everything below is HARDWARE-ONLY presentation. It never changes a
+    # decision, a threshold, or a setpoint — fm_inference_base.py stays
+    # byte-identical to the simulation pipeline (see README section 1).
+
+    def _c(self, code: str) -> str:
+        """ANSI escape, or '' when colour is disabled."""
+        return _ANSI.get(code, "") if self._color else ""
+
+    def _elapsed(self) -> str:
+        s = int(time.time() - self._t_run_start)
+        return f"T+{s // 60:02d}:{s % 60:02d}"
+
+    def _emit(self, text: str, warn: bool = False):
+        """Log at INFO or WARN from two SEPARATE call sites.
+
+        rclpy caches logger state per call site and raises
+        'Logger severity cannot be changed between calls' if the same site is
+        used at two severities. Selecting the method into a variable and
+        calling it from one line does exactly that — it crashed the node the
+        first time a WARN phase (ARMING) followed an INFO phase (PREFLIGHT).
+        Keep these two calls on their own lines."""
+        if warn:
+            self.get_logger().warn(text)
+        else:
+            self.get_logger().info(text)
+
+    def _announce_phase(self, name: str, detail: str = "", warn: bool = False):
+        """Unmissable banner on every mission-phase transition.
+
+        The operator is watching this terminal while a pilot holds the RC.
+        Which phase the drone is in must be readable at a glance, which a
+        stream of same-looking INFO lines does not give you."""
+        prev = self._phase_name
+        self._phase_name = name
+        self._t_phase    = time.time()
+        if name in _PHASE_ORDER:
+            self._phase_idx = _PHASE_ORDER.index(name) + 1
+        col  = self._c(_PHASE_COLOR.get(name, "white"))
+        bold = self._c("bold")
+        rst  = self._c("reset")
+        step = (f"[{self._phase_idx}/{len(_PHASE_ORDER)}] "
+                if name in _PHASE_ORDER else "")
+        self._emit(f"{col}{'=' * 62}{rst}", warn)
+        self._emit(f"{col}{bold}  >>> {step}{name}{rst}"
+                   f"{self._c('dim')}   (from {prev})   {self._elapsed()}{rst}",
+                   warn)
+        if detail:
+            self._emit(f"{col}      {detail}{rst}", warn)
+        self._emit(f"{col}{'=' * 62}{rst}", warn)
+
+    def _phase_note(self, text: str, warn: bool = False):
+        """One-line sub-status inside the current phase (no banner)."""
+        col = self._c(_PHASE_COLOR.get(self._phase_name, "white"))
+        rst = self._c("reset")
+        self._emit(f"{col}[{self._phase_name}]{rst} {text}", warn)
+
+    def _print_status(self):
+        """Replaces the base status line with a flight-monitoring one.
+
+        Shows PHYSICAL altitude (z - ground_z) rather than raw local-frame z:
+        raw z is meaningless to an operator standing next to the drone, and
+        reading it wrong is exactly what went unnoticed on 2026-08-27."""
+        pos   = self._drone_state.global_pos
+        speed = float(np.linalg.norm(self._drone_state.global_vel[:2]))
+        col   = self._c(_PHASE_COLOR.get(self._phase_name, "white"))
+        rst   = self._c("reset")
+        bold  = self._c("bold")
+
+        alt = float(pos[2]) - self._ground_z
+        parts = [f"alt={alt:5.2f}m"]
+
+        if self._home_locked:
+            d_home = float(np.linalg.norm(pos[:2] - self._home_xy))
+            fence = ""
+            if self._max_home_d > 0.0:
+                frac = d_home / self._max_home_d
+                if frac > 0.8:
+                    fence = self._c("red") + "!" + rst
+                elif frac > 0.6:
+                    fence = self._c("yellow") + "." + rst
+            parts.append(f"home={d_home:5.2f}m{fence}")
+
+        if self._global_target is not None:
+            d_goal = float(np.linalg.norm(pos[:2] - self._global_target))
+            parts.append(f"goal={d_goal:5.2f}m")
+
+        parts.append(f"spd={speed:4.2f}")
+
+        if self._esdf.is_ready():
+            # +0.30 = BODY_RADIUS_M: get_edt_dis is a body-EDGE distance, but
+            # every threshold the operator is comparing against (guard_clear,
+            # safe_dis) is a CENTRE-OF-MASS distance. Show the same frame.
+            clear = float(self._esdf.get_edt_dis(pos[:2])) + 0.30
+            if clear < self._guard_clear:
+                parts.append(f"clear={self._c('red')}{clear:4.2f}m{rst}")
+            elif clear < self._guard_clear + 0.2:
+                parts.append(f"clear={self._c('yellow')}{clear:4.2f}m{rst}")
+            else:
+                parts.append(f"clear={clear:4.2f}m")
+        else:
+            parts.append(f"clear={self._c('yellow')}no-map{rst}")
+
+        if self._batt_v is not None:
+            parts.append(f"bat={self._batt_v:4.1f}V")
+
+        # What the drone is actually DOING right now, which "FLYING" alone
+        # does not tell you: a guard that invalidated the trajectory leaves
+        # the state at FLYING while the drone just sits there.
+        act = ""
+        if self._mission_state == self.STATE_FLYING:
+            if self._escape_active:
+                act = f" {self._c('red')}{bold}[ESCAPE]{rst}"
+            else:
+                with self._traj_lock:
+                    moving = self._traj.is_valid()
+                act = ("" if moving
+                       else f" {self._c('yellow')}[HOLDING - no trajectory]{rst}")
+
+        inf = np.mean(self._inference_times) if self._inference_times else 0.0
+        tail = (f"replan#{self._replan_count} {self._last_replan_ms:.0f}ms "
+                f"(inf {inf:.0f}ms)")
+        if self._replan_slow_n:
+            tail += f" {self._c('yellow')}slow x{self._replan_slow_n}{rst}"
+
+        self.get_logger().info(
+            f"{col}{bold}[{self._elapsed()}] {self._phase_name:<9s}{rst}"
+            f"{act} | " + " | ".join(parts) + f" | {self._c('dim')}{tail}{rst}")
+
+    def _replan(self):
+        """Times the base replan so an overrun is visible in the terminal.
+
+        planning_time_ahead is the compute-time budget: the trajectory starts
+        at the drone's predicted position that far ahead, but is played back
+        from the moment it is installed. A replan that takes longer installs a
+        trajectory whose start point the drone has ALREADY passed, and PX4
+        then chases a setpoint behind itself."""
+        t0 = time.time()
+        super()._replan()
+        dt = time.time() - t0
+        self._last_replan_ms = dt * 1000.0
+        if self._warn_overrun and dt > self._dt_ahead:
+            self._replan_slow_n += 1
+            self.get_logger().warn(
+                f"{self._c('yellow')}[SLOW] Replan {dt * 1000:.0f}ms > budget "
+                f"{self._dt_ahead * 1000:.0f}ms (planning_time_ahead) — "
+                f"trajectory starts {(dt - self._dt_ahead):.2f}s behind the "
+                f"drone{self._c('reset')}", throttle_duration_sec=3.0)
 
     # ── Callback: detect RC override & link loss ──────────────────────────────
 
@@ -590,6 +791,7 @@ class FMInferenceRealNode(FMInferenceNode):
     def _hard_stop(self, reason, try_auto_land=False):
         self._stream_on = False
         self._in_offboard_mission = False
+        self._announce_phase("ABORT", f"MISSION STOPPED: {reason}", warn=True)
         self.get_logger().error("=" * 62)
         self.get_logger().error(f"[REAL] MISSION STOPPED: {reason}")
         if try_auto_land:
@@ -773,6 +975,10 @@ class FMInferenceRealNode(FMInferenceNode):
     # ── Mission sequence ────────────────────────────────────────────────────────
 
     def run_sequence(self):
+        self._t_run_start = time.time()
+        self._announce_phase(
+            "PREFLIGHT",
+            "FCU -> RC param -> pose -> GPS -> depth/ESDF -> ground_z -> home")
         # 1. FCU connection
         self.get_logger().info("[REAL] Waiting for MAVROS (/px4/state)...")
         t0 = time.time()
@@ -866,12 +1072,13 @@ class FMInferenceRealNode(FMInferenceNode):
 
         # ── DRY RUN: full pipeline without flying ────────────────────────────
         if self._dry_run:
-            self.get_logger().warn("=" * 62)
-            self.get_logger().warn("[REAL] DRY RUN — no ARM, no setpoints.")
+            self._announce_phase(
+                "DRY RUN",
+                "no ARM, no setpoints — full perception + planner only",
+                warn=True)
             self.get_logger().warn(
                 "[REAL] Watch for '[INF] Replan ok', '[FM] GATE two-sided', and "
                 "the /planner/candidates marker in RViz. Ctrl-C to stop.")
-            self.get_logger().warn("=" * 62)
             self._mission_state = self.STATE_FLYING
             self._reset_progress()
             last = 0.0
@@ -884,11 +1091,16 @@ class FMInferenceRealNode(FMInferenceNode):
             return
 
         # 9. Warm up the setpoint stream (PX4 refuses OFFBOARD without a stream)
-        self.get_logger().info("[REAL] Warming up the setpoint stream (~2 s)...")
+        self._announce_phase(
+            "ARMING",
+            f"PROPELLERS WILL SPIN — cruise z={self._cruise_z:.2f} m "
+            f"(physical ~{self._alt:.1f} m). Pilot: RC ready.",
+            warn=True)
+        self._phase_note("warming up the setpoint stream (~2 s)...")
         time.sleep(2.0)
 
         # 10. ARM
-        self.get_logger().info("[REAL] ARM...")
+        self._phase_note("sending ARM...")
         t0, armed = time.time(), False
         while rclpy.ok() and time.time() - t0 < self._arm_timeout:
             if self._arm(True):
@@ -918,30 +1130,64 @@ class FMInferenceRealNode(FMInferenceNode):
         # 12. TAKEOFF
         self._mission_state = self.STATE_TAKEOFF
         self._hold_z = self._cruise_z
-        self.get_logger().info(
-            f"[REAL] TAKEOFF -> z={self._cruise_z:.2f} m "
-            f"(physical ~{self._alt:.1f} m)")
+        self._announce_phase(
+            "TAKEOFF",
+            f"climbing to z={self._cruise_z:.2f} m "
+            f"(physical ~{self._alt:.1f} m), holding XY home. "
+            f"Stable = +-0.15 m and |vz|<0.2 m/s held 2 s.")
         stable = self._wait_altitude_real(self._cruise_z)
         if self._aborted():
             return self._hard_stop("RC override / link loss during takeoff")
         if self._abort_reason is not None:
             return self._land_and_finish()
         if not stable:
-            self.get_logger().warn("[REAL] Takeoff not yet stable — proceeding carefully.")
+            self._phase_note(
+                "altitude never became stable within 30 s — proceeding "
+                "carefully (mission continues by design)", warn=True)
+        else:
+            self._phase_note(
+                f"reached cruise altitude, alt="
+                f"{float(self._drone_state.global_pos[2]) - self._ground_z:.2f} m")
 
         # 13. Settle + clean map
-        time.sleep(self._settle_s)
+        # Announced as its own phase: the FSM has no HOVER state, so without
+        # this the terminal goes quiet for hover_settle_s + ~1.5 s and an
+        # operator cannot tell settling apart from a hang.
+        self._announce_phase(
+            "HOVER",
+            f"settling {self._settle_s:.1f} s over home, then wiping the "
+            f"octomap so planning starts from a clean map")
+        t_settle = time.time()
+        while rclpy.ok() and time.time() - t_settle < self._settle_s:
+            if self._aborted():
+                return self._hard_stop("RC override / link loss while hovering")
+            if self._abort_reason is not None:
+                return self._land_and_finish()
+            left = self._settle_s - (time.time() - t_settle)
+            self.get_logger().info(
+                f"{self._c('blue')}[HOVER]{self._c('reset')} "
+                f"settling... {left:4.1f} s left",
+                throttle_duration_sec=1.0)
+            time.sleep(0.1)
         if self._octo_reset_client.wait_for_service(timeout_sec=2.0):
             self._call_srv(self._octo_reset_client, EmptySrv.Request(), timeout=5.0)
-            self.get_logger().info("[REAL] Octomap reset (clean map from cruise_z)")
+            self._phase_note("octomap wiped — rebuilding a clean map (1.5 s)")
             time.sleep(1.5)
+        else:
+            self._phase_note("octomap reset service unavailable — map NOT "
+                             "wiped, stale ground voxels may remain", warn=True)
 
         # 14. FLYING — FM replan loop
         self._mission_state = self.STATE_FLYING
         self._reset_progress()
-        self.get_logger().info(
-            f"[REAL] START -> goal=({self._global_target[0]:.2f},"
-            f"{self._global_target[1]:.2f})")
+        self._announce_phase(
+            "FLYING",
+            f"goal=({self._global_target[0]:.2f},{self._global_target[1]:.2f}) "
+            f"| v_max={self._v_max:.2f} m/s | replan every "
+            f"{self._replan_period:.1f} s | RC override is ARMED")
+        self._phase_note(
+            "expect 'look-ahead guard / UNOBSERVED' hovers at first — the map "
+            "was just wiped and has to see the path ahead before advancing")
 
         t_mission = time.time()
         last_replan = 0.0
@@ -950,11 +1196,14 @@ class FMInferenceRealNode(FMInferenceNode):
             if self._aborted():
                 return self._hard_stop("RC override / link loss while flying")
             if self._abort_reason is not None:
-                self.get_logger().error(f"[REAL] ABORT: {self._abort_reason}")
+                self._announce_phase(
+                    "ABORT", f"{self._abort_reason} -> landing now", warn=True)
                 break
             if self._mission_to > 0.0 and now - t_mission > self._mission_to:
-                self.get_logger().warn(
-                    f"[REAL] Mission timeout {self._mission_to:.0f} s — landing.")
+                self._announce_phase(
+                    "ABORT",
+                    f"mission timeout {self._mission_to:.0f} s reached "
+                    f"-> landing now", warn=True)
                 break
 
             due  = now - last_replan >= self._replan_period
@@ -967,7 +1216,8 @@ class FMInferenceRealNode(FMInferenceNode):
             dist = float(np.linalg.norm(
                 self._drone_state.global_pos[:2] - self._global_target))
             if not self._escape_active and (dist < 1.0 or self._reached_target):
-                self.get_logger().info(f"[REAL] GOAL REACHED ({dist:.2f} m remaining)")
+                self._phase_note(
+                    f"*** GOAL REACHED *** ({dist:.2f} m remaining) -> landing")
                 break
             time.sleep(0.05)
 
@@ -977,6 +1227,11 @@ class FMInferenceRealNode(FMInferenceNode):
     def _land_and_finish(self):
         if self._aborted():
             return self._hard_stop("RC override / link loss")
+        self._announce_phase(
+            "LANDING",
+            f"trajectory dropped, holding XY home, descending at "
+            f"{self._descent_v:.2f} m/s to {self._land_handoff:.2f} m "
+            f"above ground, then AUTO.LAND")
         with self._traj_lock:
             self._traj.invalidate()
         self._controlled_descent(float(self._drone_state.global_pos[2]))
@@ -985,21 +1240,28 @@ class FMInferenceRealNode(FMInferenceNode):
 
         self._in_offboard_mission = False
         if self._auto_land:
-            self.get_logger().info("[REAL] Handing touchdown off to AUTO.LAND...")
+            self._phase_note(
+                "handing touchdown to PX4 AUTO.LAND — this node stops "
+                "commanding the drone from here", warn=True)
             self._stream_on = False
             time.sleep(0.2)
             self._set_mode("AUTO.LAND")
             t0 = time.time()
             while rclpy.ok() and self._armed and time.time() - t0 < 20.0:
+                self.get_logger().info(
+                    f"{self._c('cyan')}[LANDING]{self._c('reset')} AUTO.LAND "
+                    f"in progress, waiting for auto-disarm... "
+                    f"({20.0 - (time.time() - t0):4.1f} s left)",
+                    throttle_duration_sec=2.0)
                 time.sleep(0.3)
             if self._armed:
-                self.get_logger().warn("[REAL] Land detector slow — forcing disarm.")
+                self._phase_note("land detector slow — forcing disarm", warn=True)
                 self._arm(False)
         else:
             self._arm(False)
 
         self._mission_state = self.STATE_DONE
-        self.get_logger().info("=" * 62)
+        self._announce_phase("DONE", "landed and disarmed")
         self.get_logger().info(
             f"[REAL] DONE. Successful replans: {self._replan_count}, "
             f"cost-gate vetoes: {self._n_cost_reject}, "
