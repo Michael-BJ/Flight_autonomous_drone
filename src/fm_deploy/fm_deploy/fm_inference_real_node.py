@@ -41,6 +41,18 @@ DESIGN PRINCIPLE — and why:
        in sim). Holding the instantaneous position means every bit of EKF
        drift becomes part of the command — the drone slowly "chases" its
        own drift while climbing.
+    8. KILL SWITCH (NEW 2026-09-10) — the pilot's kill switch (RC_MAP_KILL_SW,
+       ch11, read from /mavros/rc/in) is latched once the ARM step begins:
+       setpoints stop at once, the node asks PX4 for AUTO.LAND (PX4 keeps the
+       vehicle armed for COM_KILL_DISARM = 5 s after a kill and restores the
+       motors on a revert inside that window — this makes the revert resume in
+       LAND, never in this OFFBOARD mission), keeps requesting a normal DISARM
+       (PX4 only accepts it once landed) and exits. It never arms again. Arming
+       is refused while the switch is engaged.
+    9. UNEXPECTED DISARM (NEW 2026-09-10) — a disarm during the mission that
+       this node did not request stops setpoints immediately and ends the
+       mission WITHOUT any mode change (it used to go through the landing
+       path, which kept streaming setpoints).
 
 FSM ORDER:
     IDLE -> connect -> check COM_RC_OVERRIDE -> wait for pose -> wait for depth+ESDF
@@ -62,10 +74,14 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
-from mavros_msgs.msg import PositionTarget
+from mavros_msgs.msg import PositionTarget, RCIn  # NEW: RCIn for the switch check
+from rclpy.qos import (  # NEW: raw RC input is a BEST_EFFORT topic
+    QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy)
 from mavros_msgs.srv import ParamGet, ParamPull
 from rcl_interfaces.msg import ParameterType
-from rcl_interfaces.srv import GetParameters
+from rcl_interfaces.msg import Parameter as RclParameter            # NEW (2026-09-13): octomap band
+from rcl_interfaces.msg import ParameterValue as RclParameterValue  # NEW (2026-09-13): octomap band
+from rcl_interfaces.srv import GetParameters, SetParameters         # NEW (2026-09-13): SetParameters
 from std_srvs.srv import Empty as EmptySrv
 
 import os
@@ -93,6 +109,104 @@ _ANSI = {
     "red": "\033[91m", "green": "\033[92m", "yellow": "\033[93m",
     "blue": "\033[94m", "cyan": "\033[96m", "white": "\033[97m",
 }
+
+
+class _FlyingYawLockPublisher:
+    """NEW (2026-09-15): wraps the PositionTarget publisher. While FLYING
+    (trajectory tracking, not escape) the yaw is replaced by the home yaw,
+    so the nose/camera stays on the home->goal direction instead of
+    following atan2(trajectory velocity), which swung up to 180 deg between
+    replans on 9/15 00:53 and left the camera looking 83 deg off the path.
+    Every other field and every other phase passes through unchanged."""
+
+    def __init__(self, real_pub, node):
+        self._real = real_pub
+        self._node = node
+        self._ref_last = None        # NEW (2026-09-16, RTHYAW)
+        # NEW (2026-09-15, YAWSMOOTH): state of the "smooth" mode, all yaw
+        # offsets in rad relative to the home yaw. None = not active.
+        self._t_last = None
+        self._off_filt = 0.0   # low-passed wanted offset
+        self._off_held = 0.0   # offset after the deadband
+        self._off_cmd = 0.0    # rate-limited offset actually sent
+        self._tracking = False # deadband exceeded, following until settled
+
+    # NEW (2026-09-16, RTHYAW): the yaw the lock holds. _yaw_lock_ref is set
+    # per leg by _fly_to_target (home yaw outbound, bearing to home on the
+    # RETURN leg), so the nose follows the direction of travel both ways.
+    def _ref(self, n):
+        ref = float(getattr(n, "_yaw_lock_ref", n._home_yaw))
+        if self._ref_last is None or abs(self._wrap(ref - self._ref_last)) > 1e-6:
+            self._ref_last = ref
+            self._t_last = None          # restart the smooth slew on this leg
+        return ref
+
+    @staticmethod
+    def _wrap(a):
+        return math.atan2(math.sin(a), math.cos(a))
+
+    def _smooth_yaw(self, n, msg):
+        """NEW (2026-09-15, YAWSMOOTH): nose follows the trajectory direction,
+        low-passed, deadbanded, rate-limited and kept within
+        +-yaw_max_offset of the home->goal direction."""
+        now = time.monotonic()
+        max_off = n._yaw_max_off
+        if self._t_last is None or now - self._t_last > 0.5:
+            # (re)entering FLYING: start from where the nose points now
+            cur = float(np.clip(self._wrap(n._drone_state.yaw - self._ref(n)),
+                                -max_off, max_off))
+            self._off_filt = self._off_held = self._off_cmd = cur
+            self._tracking = False
+            dt = 0.0
+        else:
+            dt = min(now - self._t_last, 0.1)
+        self._t_last = now
+        vx, vy = float(msg.velocity.x), float(msg.velocity.y)
+        raw = self._wrap(math.atan2(vy, vx) - self._ref(n))
+        # moving mostly backwards (> 120 deg off the goal direction): hold,
+        # otherwise the clamp would flip the nose between +max and -max
+        if (dt > 0.0 and math.hypot(vx, vy) > n._yaw_min_speed
+                and abs(raw) <= math.radians(120.0)):
+            want = float(np.clip(raw, -max_off, max_off))
+            k = 1.0 - math.exp(-dt / n._yaw_tau) if n._yaw_tau > 0 else 1.0
+            self._off_filt += k * (want - self._off_filt)
+            # deadband as hysteresis: small wobble never starts a turn, but
+            # once started the nose follows until the filter has settled
+            # (a plain deadband would stop up to deadband short of the path)
+            if abs(self._off_filt - self._off_held) > n._yaw_deadband:
+                self._tracking = True
+            if self._tracking:
+                self._off_held = self._off_filt
+                if abs(want - self._off_filt) < math.radians(2.0):
+                    self._off_held = want
+                    self._tracking = False
+        # slow / hovering: keep holding the last heading
+        step = n._yaw_rate_max * dt
+        self._off_cmd += float(np.clip(self._off_held - self._off_cmd,
+                                       -step, step))
+        return self._wrap(self._ref(n) + self._off_cmd)
+
+    def publish(self, msg):
+        n = self._node
+        try:
+            active = (n._home_locked
+                      and n._mission_state == n.STATE_FLYING
+                      and not n._escape_active
+                      and isinstance(msg, PositionTarget)
+                      and not (msg.type_mask & PositionTarget.IGNORE_YAW))
+            if active and n._flying_yaw_mode == "home":
+                msg.yaw = float(self._ref(n))
+            elif active and n._flying_yaw_mode == "smooth":
+                msg.yaw = float(self._smooth_yaw(n, msg))
+            elif not active:
+                self._t_last = None
+        except Exception:
+            # never let bookkeeping stop the setpoint stream
+            pass
+        return self._real.publish(msg)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 
 class FMInferenceRealNode(FMInferenceNode):
@@ -155,6 +269,20 @@ class FMInferenceRealNode(FMInferenceNode):
         # RC / link
         self.declare_parameter("rc_override_enabled",       True)
         self.declare_parameter("verify_rc_override_param",  True)
+
+        # ── NEW: the pilot's mode switch must already be in the OFFBOARD slot
+        # before the propellers are allowed to spin. See
+        # _check_rc_offboard_position() for why.
+        self.declare_parameter("require_rc_offboard",  True)
+        self.declare_parameter("rc_mode_channel",      5)      # = RC_MAP_FLTMODE
+        self.declare_parameter("rc_offboard_pwm",      1499)   # measured slot centre
+        self.declare_parameter("rc_offboard_tol",      150)    # +/- us accepted
+        self.declare_parameter("rc_offboard_timeout",  20.0)   # s to wait for it
+        # ── NEW (2026-09-10): kill switch. SwF on the AT10II drives ch11 =
+        # RC_MAP_KILL_SW; measured 1065 us (off) / 1933 us (on).
+        self.declare_parameter("kill_switch_enabled",  True)
+        self.declare_parameter("kill_channel",         11)     # = RC_MAP_KILL_SW
+        self.declare_parameter("kill_on_pwm",          1500)   # pwm above this = engaged
         # Bench test without flying
         self.declare_parameter("dry_run",        False)
         # Mission
@@ -212,6 +340,12 @@ class FMInferenceRealNode(FMInferenceNode):
         self._max_gnd_drift  = float(self.get_parameter("max_ground_drift").value)
         self._rc_ovr_en   = bool(self.get_parameter("rc_override_enabled").value)
         self._verify_rc   = bool(self.get_parameter("verify_rc_override_param").value)
+        self._require_rc_offb = bool(self.get_parameter("require_rc_offboard").value)    # NEW
+        self._rc_mode_ch      = int(self.get_parameter("rc_mode_channel").value)         # NEW
+        self._rc_offb_pwm     = int(self.get_parameter("rc_offboard_pwm").value)         # NEW
+        self._rc_offb_tol     = int(self.get_parameter("rc_offboard_tol").value)         # NEW
+        self._rc_offb_to      = float(self.get_parameter("rc_offboard_timeout").value)   # NEW
+        self._rc_channels     = []                                                       # NEW
         self._dry_run     = bool(self.get_parameter("dry_run").value)
         self._mission_to  = float(self.get_parameter("mission_timeout_s").value)
         self._settle_s    = float(self.get_parameter("hover_settle_s").value)
@@ -224,6 +358,33 @@ class FMInferenceRealNode(FMInferenceNode):
         self._status_period = float(self.get_parameter("status_period_s").value)
         self._color       = bool(self.get_parameter("color_output").value)
         self._warn_overrun = bool(self.get_parameter("warn_replan_overrun").value)
+        # NEW (2026-09-15): yaw while FLYING. "home" = hold the home yaw
+        # (nose toward the goal); "velocity" = old behaviour (base code).
+        self.declare_parameter("flying_yaw_mode", "home")
+        self._flying_yaw_mode = str(
+            self.get_parameter("flying_yaw_mode").value).strip().lower()
+        if self._flying_yaw_mode not in ("home", "velocity", "smooth"):
+            self.get_logger().warn(
+                f"flying_yaw_mode '{self._flying_yaw_mode}' unknown -> 'home'")
+            self._flying_yaw_mode = "home"
+        # NEW (2026-09-15, YAWSMOOTH): "smooth" = nose follows the trajectory
+        # direction, limited so it cannot swing like the old "velocity" mode.
+        self.declare_parameter("yaw_smooth_tau_s", 1.0)
+        self.declare_parameter("yaw_rate_max_dps", 30.0)
+        self.declare_parameter("yaw_min_speed", 0.15)
+        self.declare_parameter("yaw_max_offset_deg", 60.0)
+        self.declare_parameter("yaw_deadband_deg", 15.0)
+        self._yaw_tau = float(np.clip(
+            float(self.get_parameter("yaw_smooth_tau_s").value), 0.0, 5.0))
+        self._yaw_rate_max = math.radians(float(np.clip(
+            float(self.get_parameter("yaw_rate_max_dps").value), 5.0, 90.0)))
+        self._yaw_min_speed = float(np.clip(
+            float(self.get_parameter("yaw_min_speed").value), 0.05, 1.0))
+        self._yaw_max_off = math.radians(float(np.clip(
+            float(self.get_parameter("yaw_max_offset_deg").value), 0.0, 90.0)))
+        self._yaw_deadband = math.radians(float(np.clip(
+            float(self.get_parameter("yaw_deadband_deg").value), 0.0, 45.0)))
+        self._pub_sp = _FlyingYawLockPublisher(self._pub_sp, self)
 
         # ── Safety state ─────────────────────────────────────────────────────
         self._rc_override = False
@@ -231,12 +392,23 @@ class FMInferenceRealNode(FMInferenceNode):
         self._in_offboard_mission = False
         self._stream_on   = True
         self._prev_mode   = ""
+        # NEW (2026-09-10): kill switch + unexpected disarm
+        self._kill_en      = bool(self.get_parameter("kill_switch_enabled").value)
+        self._kill_ch      = int(self.get_parameter("kill_channel").value)
+        self._kill_on_pwm  = int(self.get_parameter("kill_on_pwm").value)
+        self._kill_pwm     = None    # last raw value on the kill channel
+        self._kill_hits    = 0       # consecutive "engaged" samples
+        self._kill_now     = False   # live, debounced switch state
+        self._kill_watch   = False   # latching enabled from the ARM step on
+        self._kill_latched = False   # engaged after that -> terminal
+        self._disarm_abort = False   # disarm this node did not request
         self._prev_conn   = False
         self._have_pose   = False
 
         self._home_locked = False
         self._home_xy     = np.zeros(2)
         self._home_yaw    = 0.0
+        self._yaw_lock_ref = 0.0     # NEW (2026-09-16, RTHYAW)
         self._ground_z    = 0.0
         self._hold_z      = 0.0      # z held during IDLE/TAKEOFF/LANDING
 
@@ -254,6 +426,16 @@ class FMInferenceRealNode(FMInferenceNode):
         self._t_phase      = time.time()
         self._last_replan_ms = 0.0         # filled by the _replan() wrapper
         self._replan_slow_n  = 0           # how many overran the budget
+
+
+        # NEW: raw RC channels for _check_rc_offboard_position(). MAVROS
+        # publishes this BEST_EFFORT, so the QoS has to match or nothing
+        # ever arrives.
+        self.create_subscription(
+            RCIn, "/mavros/rc/in", self._cb_rc_in,
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                       history=HistoryPolicy.KEEP_LAST, depth=5,
+                       durability=DurabilityPolicy.VOLATILE))
 
         # Watchdog separate from the mission loop: the mission loop can be
         # blocked inside _replan (can take hundreds of ms), while geofence/
@@ -288,6 +470,19 @@ class FMInferenceRealNode(FMInferenceNode):
             + (f"min {self._min_batt_v:.1f} V " if self._min_batt_v > 0 else "")
             + (f"min {self._min_batt_p:.0f} %" if self._min_batt_p > 0 else "")
             + ("disabled" if self._min_batt_v <= 0 and self._min_batt_p <= 0 else ""))
+        # NEW (2026-09-15)
+        if self._flying_yaw_mode == "home":
+            yaw_txt = "HOME yaw locked (nose toward goal)"
+        elif self._flying_yaw_mode == "smooth":   # NEW (2026-09-15, YAWSMOOTH)
+            yaw_txt = (
+                f"SMOOTH follow path | tau {self._yaw_tau:.1f} s | "
+                f"<= {math.degrees(self._yaw_rate_max):.0f} deg/s | "
+                f"+-{math.degrees(self._yaw_max_off):.0f} deg of goal dir | "
+                f"deadband {math.degrees(self._yaw_deadband):.0f} deg | "
+                f"min speed {self._yaw_min_speed:.2f} m/s")
+        else:
+            yaw_txt = "follows trajectory velocity (old behaviour)"
+        self.get_logger().info("  Flying yaw    : " + yaw_txt)
         if self._require_gps:
             self.get_logger().info(
                 f"  GPS gate      : ENABLED — fix>=3D, sats>={self._min_sats}, "
@@ -309,7 +504,10 @@ class FMInferenceRealNode(FMInferenceNode):
 
     def _c(self, code: str) -> str:
         """ANSI escape, or '' when colour is disabled."""
-        return _ANSI.get(code, "") if self._color else ""
+        # NEW (2026-09-14): getattr — the base __init__ calls _c() for the
+        # Backend banner line before this class sets self._color
+        # (AttributeError crashed the node at startup). Default: colour on.
+        return _ANSI.get(code, "") if getattr(self, "_color", True) else ""
 
     def _elapsed(self) -> str:
         s = int(time.time() - self._t_run_start)
@@ -407,6 +605,8 @@ class FMInferenceRealNode(FMInferenceNode):
 
         if self._batt_v is not None:
             parts.append(f"bat={self._batt_v:4.1f}V")
+        if self._kill_now:  # NEW (2026-09-10)
+            parts.append(f"{self._c('red')}KILL{rst}")
 
         # What the drone is actually DOING right now, which "FLYING" alone
         # does not tell you: a guard that invalidated the trajectory leaves
@@ -454,18 +654,31 @@ class FMInferenceRealNode(FMInferenceNode):
     # ── Callback: detect RC override & link loss ──────────────────────────────
 
     def _cb_state(self, msg):
+        prev_armed = getattr(self, "_armed", False)   # NEW (2026-09-10)
         super()._cb_state(msg)   # fills in _connected / _armed / _mode
         try:
+            # NEW (2026-09-10): a disarm during the mission that this node did
+            # not request ends it. _in_offboard_mission is cleared before the
+            # AUTO.LAND hand-off, where a disarm is expected.
+            if (self._in_offboard_mission and prev_armed and not self._armed
+                    and not self._disarm_abort):
+                self._disarm_abort = True
+                self._stream_on = False
+                self.get_logger().error(
+                    "[ARM] UNEXPECTED DISARM during active mission — setpoints stopped.")
             if (self._in_offboard_mission and self._prev_conn
                     and not self._connected and not self._link_lost):
                 self._link_lost = True
                 self.get_logger().error(
                     "[LINK] FCU DISCONNECTED during active mission — setpoints stopped.")
             # Unexpected mode change during the mission = the pilot took over.
-            # AUTO.LAND is excluded since we set that one ourselves.
+            # AUTO.LAND is NOT excluded any more (2026-09-09): every place this
+            # node sets AUTO.LAND itself clears _in_offboard_mission FIRST, so
+            # the guard above already covers that. Excluding the mode as well
+            # meant a pilot flicking the switch to Land went undetected.
             if (self._rc_ovr_en and self._in_offboard_mission
                     and self._prev_mode == "OFFBOARD"
-                    and self._mode not in ("OFFBOARD", "AUTO.LAND", "")
+                    and self._mode not in ("OFFBOARD", "")
                     and not self._rc_override):
                 self._rc_override = True
                 self.get_logger().error(
@@ -510,6 +723,7 @@ class FMInferenceRealNode(FMInferenceNode):
         link loss / dry run, without waiting for the mission loop to notice
         (the ~0.1s gap that takeoff_land_node deliberately closes too)."""
         if self._dry_run or self._rc_override or self._link_lost \
+                or self._kill_latched or self._disarm_abort \
                 or not self._stream_on:
             return
         # While not (yet) in the FLYING phase, hold XY HOME — not the
@@ -625,12 +839,177 @@ class FMInferenceRealNode(FMInferenceNode):
             self.get_logger().error("=" * 62)
             return False
         self.get_logger().info(f"[SAFETY] COM_RC_OVERRIDE={value} — OK.")
-        obl = self._get_px4_param_int("COM_OBL_ACT", timeout=3.0)
+        obl = self._get_px4_param_int("COM_OBL_RC_ACT", timeout=3.0)
         if obl is not None:
             self.get_logger().info(
-                f"[SAFETY] COM_OBL_ACT={obl} (failsafe action if the setpoint "
+                f"[SAFETY] COM_OBL_RC_ACT={obl} (failsafe action if the setpoint "
                 "stream stops — make sure it's Hold/Land/Return in QGC).")
         return True
+
+    # ── NEW: require the RC mode switch to sit in the OFFBOARD slot ──────────
+
+    def _cb_rc_in(self, msg):
+        """Raw RC channels: the OFFBOARD-slot check and the kill switch."""
+        try:
+            self._rc_channels = list(msg.channels)
+        except Exception:
+            return
+        self._update_kill_switch(self._rc_channels)
+
+    # ── NEW (2026-09-10): kill switch ─────────────────────────────────────────
+
+    def _update_kill_switch(self, ch):
+        """Debounced kill-switch state from the raw RC channels.
+
+        Two consecutive samples above kill_on_pwm count as engaged, so one
+        corrupted frame cannot end a mission. A false positive is safe anyway:
+        it only stops this node's setpoints and asks PX4 for LAND — it never
+        cuts the motors. Once _kill_watch is set (ARM step), the first engaged
+        state is latched for the rest of this process."""
+        if not self._kill_en:
+            return
+        idx = self._kill_ch - 1
+        if not (0 <= idx < len(ch)):
+            return
+        pwm = int(ch[idx])
+        self._kill_pwm = pwm
+        self._kill_hits = self._kill_hits + 1 if pwm > self._kill_on_pwm else 0
+        self._kill_now = self._kill_hits >= 2
+        if self._kill_now and self._kill_watch and not self._kill_latched:
+            self._kill_latched = True
+            self._stream_on = False
+            self.get_logger().error(
+                f"[KILL] KILL SWITCH ENGAGED (ch{self._kill_ch}={pwm}) — "
+                "setpoints stopped. Only LAND + DISARM will be requested.")
+
+    def _kill_abort(self):
+        """Terminal reaction to the kill switch (pilot's decision, 2026-09-10):
+        setpoints are already stopped; ask for AUTO.LAND so that a revert
+        inside PX4's 5 s kill window resumes in LAND (PX4's offboard-loss
+        failsafe would get there too, after COM_OF_LOSS_T); keep requesting a
+        normal DISARM, which PX4 only accepts once landed; exit without ever
+        arming or entering OFFBOARD again."""
+        self._stream_on = False
+        self._in_offboard_mission = False
+        self._announce_phase(
+            "ABORT", "KILL SWITCH — motors cut by the pilot", warn=True)
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[KILL] MISSION ABORTED — kill switch engaged. Requesting AUTO.LAND "
+            "(a revert inside PX4's kill window lands) and DISARM.")
+        self.get_logger().error(
+            "[KILL] This node will NOT arm or enter OFFBOARD again.")
+        self.get_logger().error("=" * 62)
+        if self._armed:
+            for _ in range(3):
+                if self._set_mode("AUTO.LAND"):
+                    break
+                time.sleep(0.3)
+        t0 = time.time()
+        while rclpy.ok() and self._armed and time.time() - t0 < 15.0:
+            self._arm(False)   # normal disarm: PX4 rejects it while airborne
+            time.sleep(1.0)
+        if self._armed:
+            self.get_logger().error(
+                "[KILL] Still ARMED after 15 s — PX4 did not accept DISARM "
+                "(not landed yet?). Pilot: use the RC.")
+        else:
+            self.get_logger().error("[KILL] Drone is DISARMED.")
+        self._mission_state = self.STATE_DONE
+        self._shutdown()
+
+    def _check_kill_switch_released(self) -> bool:
+        """Refuse to arm while the kill switch is engaged or unreadable."""
+        if not self._kill_en:
+            self.get_logger().warn(
+                "[SAFETY] kill_switch_enabled:=false — the kill switch is NOT "
+                "watched by this node.")
+            return True
+        t0 = time.time()
+        last = 0.0
+        while rclpy.ok() and time.time() - t0 < self._rc_offb_to:
+            now = time.time()
+            if self._kill_pwm is not None and not self._kill_now:
+                self.get_logger().info(
+                    f"[SAFETY] Kill switch released "
+                    f"(ch{self._kill_ch}={self._kill_pwm}). OK.")
+                return True
+            if now - last >= 3.0:
+                last = now
+                if self._kill_pwm is None:
+                    self.get_logger().warn(
+                        f"[SAFETY] No RC data for kill channel ch{self._kill_ch} "
+                        f"yet ({self._rc_offb_to - (now - t0):.0f}s left)")
+                else:
+                    self.get_logger().warn(
+                        f"[SAFETY] KILL SWITCH IS ENGAGED "
+                        f"(ch{self._kill_ch}={self._kill_pwm}) — release it "
+                        f"({self._rc_offb_to - (now - t0):.0f}s left)")
+            time.sleep(0.2)
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[SAFETY] KILL SWITCH ENGAGED OR UNREADABLE — REFUSING TO ARM.")
+        self.get_logger().error("=" * 62)
+        return False
+
+    def _check_rc_offboard_position(self) -> bool:
+        """Refuse to arm unless the pilot's mode switch is ALREADY in the
+        OFFBOARD slot.
+
+        WHY: this node asks PX4 for OFFBOARD over MAVLink, and PX4 grants it
+        no matter where the RC mode switch happens to be. Flown that way the
+        switch and the actual flight mode disagree, and the pilot's first
+        "take over" flick can land on the position the switch is already in
+        — a no-op at the exact moment it matters. Starting in OFFBOARD makes
+        every other switch position a live escape route.
+        """
+        if not self._require_rc_offb:
+            self.get_logger().warn(
+                "[SAFETY] require_rc_offboard:=false — the RC mode switch "
+                "position is NOT checked. Switch and flight mode may "
+                "disagree.")
+            return True
+
+        lo = self._rc_offb_pwm - self._rc_offb_tol
+        hi = self._rc_offb_pwm + self._rc_offb_tol
+        idx = self._rc_mode_ch - 1
+        self.get_logger().info(
+            f"[SAFETY] Waiting for the RC mode switch to be in OFFBOARD "
+            f"(ch{self._rc_mode_ch} within {lo}-{hi})...")
+        t0 = time.time()
+        last = 0.0
+        while rclpy.ok() and time.time() - t0 < self._rc_offb_to:
+            ch = self._rc_channels
+            now = time.time()
+            if ch and 0 <= idx < len(ch):
+                pwm = int(ch[idx])
+                if lo <= pwm <= hi:
+                    self.get_logger().info(
+                        f"[SAFETY] RC mode switch is in OFFBOARD "
+                        f"(ch{self._rc_mode_ch}={pwm}). OK.")
+                    return True
+                if now - last >= 3.0:
+                    last = now
+                    self.get_logger().warn(
+                        f"[SAFETY] Move the RC mode switch to OFFBOARD: "
+                        f"ch{self._rc_mode_ch}={pwm}, need {lo}-{hi} "
+                        f"({self._rc_offb_to - (now - t0):.0f}s left)")
+            elif now - last >= 3.0:
+                last = now
+                self.get_logger().warn(
+                    f"[SAFETY] No RC data on /mavros/rc/in yet "
+                    f"({self._rc_offb_to - (now - t0):.0f}s left)")
+            time.sleep(0.2)
+
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[SAFETY] RC MODE SWITCH IS NOT IN THE OFFBOARD SLOT — "
+            "REFUSING TO ARM.")
+        self.get_logger().error(
+            "[SAFETY] Put the switch in OFFBOARD before starting, so that "
+            "flicking it anywhere else is a real takeover.")
+        self.get_logger().error("=" * 62)
+        return False
 
     # ── GPS quality pre-arm gate ──────────────────────────────────────────────
 
@@ -739,6 +1118,52 @@ class FMInferenceRealNode(FMInferenceNode):
         self.get_logger().error("=" * 62)
         return False
 
+    # ── NEW (2026-09-13): octomap band relative to the ground ─────────────────
+
+    def _configure_octomap_band(self, alt_above_ground):
+        """Occupancy band as HEIGHT ABOVE THE GROUND, shifted into odom z.
+
+        The parent computes the band in absolute odom z as
+        [max(0.35, z - 0.7), z + 1.0] and is called with target_alt. That is
+        only right when ground_z is ~0. On 2026-09-13 (height reference =
+        GPS) the drone sat at ground_z = -6.16 m, so it cruised at z = -4.16
+        while the band stayed at [1.30, 3.00] — 5-7 m above the drone. The
+        octomap never saw anything at flight height, every cell around the
+        drone stayed unknown, the guard reported "drone is OFF-MAP" from the
+        first FLYING tick, and the blind abort landed it after 10 s.
+
+        The parent (fm_inference_base.py) is left untouched on purpose — it is
+        shared with simulation, where ground_z is ~0 and the result is the
+        same. Here the same band is computed relative to the ground (the 0.35
+        m floor keeps ground returns out) and then shifted by ground_z.
+        """
+        occ_min = self._ground_z + max(0.35, alt_above_ground - 0.7)
+        occ_max = self._ground_z + alt_above_ground + 1.0
+        if not self._octo_param_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn(
+                f"[REAL] octomap set_parameters absent — set manually: "
+                f"occ_min_z~{occ_min:.2f} occ_max_z~{occ_max:.2f}")
+            return
+        req = SetParameters.Request()
+        for name, val in (("occupancy_min_z", occ_min),
+                          ("occupancy_max_z", occ_max)):
+            p = RclParameter()
+            p.name = name
+            pv = RclParameterValue()
+            pv.type, pv.double_value = ParameterType.PARAMETER_DOUBLE, float(val)
+            p.value = pv
+            req.parameters.append(p)
+        res = self._call_srv(self._octo_param_client, req)
+        ok  = bool(res and all(r.successful for r in res.results))
+        self.get_logger().info(
+            f"[REAL] {'ok' if ok else 'FAILED'} Octomap band "
+            f"[{occ_min:.2f}, {occ_max:.2f}] odom z = "
+            f"[{occ_min - self._ground_z:.2f}, {occ_max - self._ground_z:.2f}] m "
+            f"above ground (ground_z={self._ground_z:.2f})")
+        if ok and self._octo_reset_client.wait_for_service(timeout_sec=3.0):
+            self._call_srv(self._octo_reset_client, EmptySrv.Request(),
+                           timeout=5.0)
+
     # ── Home frame: goal + geofence ───────────────────────────────────────────
 
     def _lock_home(self):
@@ -789,6 +1214,10 @@ class FMInferenceRealNode(FMInferenceNode):
     # ── Hard abort: stop sending setpoints ────────────────────────────────────
 
     def _hard_stop(self, reason, try_auto_land=False):
+        if self._kill_latched:  # NEW (2026-09-10): the kill switch has its own terminal path
+            return self._kill_abort()
+        if self._disarm_abort:  # NEW (2026-09-10): never command a mode for a disarm
+            reason, try_auto_land = f"UNEXPECTED DISARM ({reason})", False
         self._stream_on = False
         self._in_offboard_mission = False
         self._announce_phase("ABORT", f"MISSION STOPPED: {reason}", warn=True)
@@ -808,7 +1237,8 @@ class FMInferenceRealNode(FMInferenceNode):
 
     def _aborted(self) -> bool:
         """True if some condition requires the mission to stop right now."""
-        return self._rc_override or self._link_lost
+        return (self._rc_override or self._link_lost
+                or self._kill_latched or self._disarm_abort)  # NEW (2026-09-10)
 
     # ── Wait for altitude with hardware checks ─────────────────────────────────
 
@@ -1099,16 +1529,32 @@ class FMInferenceRealNode(FMInferenceNode):
         self._phase_note("warming up the setpoint stream (~2 s)...")
         time.sleep(2.0)
 
+        # 9b. NEW: the pilot's mode switch must already be in the OFFBOARD
+        # slot, so that every other switch position stays a live escape route.
+        # Skipped in dry_run, which never arms anyway.
+        if not self._dry_run and not self._check_rc_offboard_position():
+            return self._shutdown()
+
+        # 9c. NEW (2026-09-10): never arm with the kill switch engaged; from
+        # here on any engagement of it is terminal (see _kill_abort).
+        if not self._check_kill_switch_released():
+            return self._shutdown()
+        self._kill_watch = True
+
         # 10. ARM
         self._phase_note("sending ARM...")
         t0, armed = time.time(), False
         while rclpy.ok() and time.time() - t0 < self._arm_timeout:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
             if self._arm(True):
                 time.sleep(0.8)
                 if self._armed:
                     armed = True
                     break
             time.sleep(1.5)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
         if not armed:
             self.get_logger().error("[REAL] ARM failed.")
             return self._shutdown()
@@ -1119,13 +1565,19 @@ class FMInferenceRealNode(FMInferenceNode):
             return self._shutdown()
         t0 = time.time()
         while rclpy.ok() and self._mode != "OFFBOARD" and time.time() - t0 < 5.0:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
             self._set_mode("OFFBOARD")
             time.sleep(0.3)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
         if self._mode != "OFFBOARD":
             self.get_logger().error("[REAL] PX4 did not enter OFFBOARD.")
             self._arm(False)
             return self._shutdown()
         self._in_offboard_mission = True
+        if not self._armed:  # NEW (2026-09-10): disarmed before takeoff began
+            return self._hard_stop("UNEXPECTED DISARM before takeoff")
 
         # 12. TAKEOFF
         self._mission_state = self.STATE_TAKEOFF
@@ -1178,13 +1630,39 @@ class FMInferenceRealNode(FMInferenceNode):
                              "wiped, stale ground voxels may remain", warn=True)
 
         # 14. FLYING — FM replan loop
+        # NEW (2026-09-16, RTHREPLAN): the loop moved to _fly_to_target() so it
+        # can be run a second time toward home. Behaviour here is unchanged.
+        if self._fly_to_target(self._global_target,
+                               self._mission_to) == "stopped":
+            return
+
+        # 15. LANDING
+        self._land_and_finish()
+
+    # NEW (2026-09-16, RTHREPLAN): lifted verbatim out of run_sequence().
+    def _fly_to_target(self, target, timeout_s, tag="FLYING",
+                       banner_extra="", timeout_label="mission timeout",
+                       yaw_ref=None):
+        """FM replan loop toward `target` (x, y). Returns:
+             "reached" — within 1 m of the target (or the planner said so)
+             "abort"   — self._abort_reason set, timeout, or ROS shutdown;
+                         the caller lands
+             "stopped" — _hard_stop() already ran (RC / link / kill); the
+                         caller must return immediately and send nothing
+        """
+        self._global_target = np.asarray(target, dtype=float)[:2].copy()
+        self._reached_target = False
+        # NEW (2026-09-16, RTHYAW): yaw reference for this leg.
+        self._yaw_lock_ref = (float(self._home_yaw) if yaw_ref is None
+                              else float(yaw_ref))
         self._mission_state = self.STATE_FLYING
         self._reset_progress()
         self._announce_phase(
-            "FLYING",
+            tag,
             f"goal=({self._global_target[0]:.2f},{self._global_target[1]:.2f}) "
             f"| v_max={self._v_max:.2f} m/s | replan every "
-            f"{self._replan_period:.1f} s | RC override is ARMED")
+            f"{self._replan_period:.1f} s | RC override is ARMED"
+            + banner_extra)
         self._phase_note(
             "expect 'look-ahead guard / UNOBSERVED' hovers at first — the map "
             "was just wiped and has to see the path ahead before advancing")
@@ -1194,17 +1672,18 @@ class FMInferenceRealNode(FMInferenceNode):
         while rclpy.ok():
             now = time.time()
             if self._aborted():
-                return self._hard_stop("RC override / link loss while flying")
+                self._hard_stop("RC override / link loss while flying")
+                return "stopped"
             if self._abort_reason is not None:
                 self._announce_phase(
                     "ABORT", f"{self._abort_reason} -> landing now", warn=True)
-                break
-            if self._mission_to > 0.0 and now - t_mission > self._mission_to:
+                return "abort"
+            if timeout_s > 0.0 and now - t_mission > timeout_s:
                 self._announce_phase(
                     "ABORT",
-                    f"mission timeout {self._mission_to:.0f} s reached "
+                    f"{timeout_label} {timeout_s:.0f} s reached "
                     f"-> landing now", warn=True)
-                break
+                return "abort"
 
             due  = now - last_replan >= self._replan_period
             asap = (self._replan_asap and now - last_replan >= 0.3)
@@ -1218,11 +1697,9 @@ class FMInferenceRealNode(FMInferenceNode):
             if not self._escape_active and (dist < 1.0 or self._reached_target):
                 self._phase_note(
                     f"*** GOAL REACHED *** ({dist:.2f} m remaining) -> landing")
-                break
+                return "reached"
             time.sleep(0.05)
-
-        # 15. LANDING
-        self._land_and_finish()
+        return "abort"
 
     def _land_and_finish(self):
         if self._aborted():
@@ -1248,6 +1725,8 @@ class FMInferenceRealNode(FMInferenceNode):
             self._set_mode("AUTO.LAND")
             t0 = time.time()
             while rclpy.ok() and self._armed and time.time() - t0 < 20.0:
+                if self._kill_latched:  # NEW (2026-09-10): stream is already off
+                    return self._kill_abort()
                 self.get_logger().info(
                     f"{self._c('cyan')}[LANDING]{self._c('reset')} AUTO.LAND "
                     f"in progress, waiting for auto-disarm... "

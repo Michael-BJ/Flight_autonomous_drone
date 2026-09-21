@@ -46,6 +46,22 @@ Model file: checkpoint from fm_trainer.py
   .onnx : inputs 'input' [1, 640*480+24] + 'noise' [K, 9] -> 'candidates' [K, 9]
           (the Euler chain is unrolled at export time, so n_steps is fixed
           inside the graph; the n_steps parameter only affects .pth)
+  .engine : NEW (2026-09-13) TensorRT engine, runs on the Jetson GPU.
+          torch and onnxruntime cannot use this GPU (cublasCreate ->
+          CUBLAS_STATUS_ALLOC_FAILED, see the onnx_fallback_on_oom note), but
+          native TensorRT works. Same I/O as .onnx, K locked to 8.
+          The engine MUST be built from the *_trt.onnx export, which marks
+          '/encoder/Concat_output_0' as an extra graph output: TensorRT 10.3
+          mis-fuses that Concat (img 128 + motion 24) with the Expand to K
+          and returns wrong candidates (max diff 1.87 vs .pth); marking the
+          tensor as an output stops the fusion (max diff ~1e-5 on 90 inputs).
+          Build (FP32, --noTF32 keeps results identical to .pth):
+            trtexec --onnx=fm_planner_XXXX_trt.onnx --noTF32 \
+                    --memPoolSize=workspace:256 \
+                    --saveEngine=fm_planner_XXXX_trt_fp32.engine
+          An engine only runs on the TensorRT version + GPU it was built on.
+          At load time the engine is compared against the .onnx on CPU
+          (trt_parity_check); any failure falls back to .onnx on CPU.
 
 Extra parameters vs fm_inference_base:
   K       (default 8) : candidates sampled per replan
@@ -76,13 +92,21 @@ Extra parameters vs fm_inference_base:
       shape). Falling back to .pth-on-CPU does NOT lock K.
   onnx_fallback_path (default "") : explicit .onnx path used for the
       fallback. Empty = auto-derive from model_path (swap the .pth
-      extension for .onnx, same directory).
+      extension for .onnx, same directory). NEW (2026-09-13): for a
+      .engine, the auto-derived candidates are <stem>.onnx and the stem
+      with its _fp32/_tf32 suffix removed (X_trt_fp32.engine -> X_trt.onnx).
+  trt_parity_check (default True) : NEW (2026-09-13) run the engine and the
+      fallback .onnx (CPU) once on the same fixed input at load time; refuse
+      the engine if they differ by more than trt_parity_tol. Guards against
+      an engine rebuilt without the Concat fix, or built for another setup.
+  trt_parity_tol (default 1e-3) : NEW (2026-09-13) max abs difference allowed.
 
 Usage:
   ros2 launch fm_planner fm_planning_unknown.launch.py \
       model_path:=/home/michael/saved_net/fm/run_XXXX/fm_planner_XXXX.pth \
       goal_x:=20.0 K:=8 n_steps:=2
 """
+import ctypes   # NEW (2026-09-13): preload libcudla for TensorRT
 import json
 import os
 import sys
@@ -103,6 +127,19 @@ from fm_inference_base import (
 
 if HAS_ONNX:
     import onnxruntime as ort
+
+# NEW (2026-09-13): TensorRT backend (.engine). libnvinfer_plugin needs
+# libcudla.so.1, which JetPack installs outside the loader path (ldconfig
+# does not list it). Preloading it RTLD_GLOBAL lets `import tensorrt` resolve
+# it without LD_LIBRARY_PATH in the launch files.
+TRT_CUDLA_LIB = "/usr/local/cuda-12.6/targets/aarch64-linux/lib/libcudla.so.1"
+
+
+def _import_tensorrt():
+    if os.path.isfile(TRT_CUDLA_LIB):
+        ctypes.CDLL(TRT_CUDLA_LIB, mode=ctypes.RTLD_GLOBAL)
+    import tensorrt
+    return tensorrt
 
 # Mode persistence (hysteresis) for candidate ranking:
 #   MODE_COMMIT_MIN_LAT  : the drone counts as "committed to a side" once the
@@ -179,6 +216,13 @@ class FMInferenceNode(FMInferenceBase):
             self.get_parameter("onnx_fallback_on_oom").value)
         self._onnx_fallback_path = str(
             self.get_parameter("onnx_fallback_path").value)
+        # NEW (2026-09-13): TensorRT load-time parity check (see docstring)
+        self.declare_parameter("trt_parity_check", True)
+        self.declare_parameter("trt_parity_tol", 1e-3)
+        self._trt_parity_check = bool(
+            self.get_parameter("trt_parity_check").value)
+        self._trt_parity_tol = float(self.get_parameter("trt_parity_tol").value)
+        self._use_trt = False
         # Ablation toggles (default OFF = "FM-minimal": nothing beyond the base
         # pipeline + the candidate generator, i.e. the historical "model swap
         # only" comparison configuration. ON = the anticipatory FM+ variant.)
@@ -220,6 +264,36 @@ class FMInferenceNode(FMInferenceBase):
         self._gate_two_sided = 0
 
         fell_back = False
+        cpu_only = False
+        # NEW (2026-09-13): TensorRT engine on the GPU; any failure -> .onnx CPU
+        if self._model_path.endswith(".engine"):
+            onnx_path = self._find_onnx_for_engine(self._model_path)
+            try:
+                self._load_trt_engine(self._model_path, onnx_path)
+                if self._K != 8:
+                    self.get_logger().warn(
+                        f"[FM] TensorRT engine locks K=8 (static noise input "
+                        f"shape [8,9]); K={self._K} -> forced to 8.")
+                    self._K = 8
+                self._use_trt = True
+                return f"FM TensorRT (GPU) K={self._K}"
+            except Exception as exc:
+                self._trt_release()
+                if onnx_path is None:
+                    self.get_logger().error(
+                        f"[FM] TensorRT engine failed ({exc}) and no .onnx "
+                        f"fallback was found next to {self._model_path} "
+                        f"(set onnx_fallback_path).")
+                    raise
+                self.get_logger().error(
+                    f"[FM] TensorRT engine failed ({exc}) — falling back to "
+                    f"{os.path.basename(onnx_path)} on CPU.")
+                if self._K != 8:
+                    self._K = 8
+                self._model_path = onnx_path
+                fell_back = True
+                cpu_only = True   # the CUDA provider is known-broken here
+
         if self._use_pth:
             try:
                 self._fm = load_checkpoint(self._model_path, device=self._device)
@@ -283,9 +357,11 @@ class FMInferenceNode(FMInferenceBase):
         if not HAS_ONNX:
             raise RuntimeError("onnxruntime not installed")
         try:
+            # NEW (2026-09-13): after a TensorRT failure go straight to CPU
+            providers = (['CPUExecutionProvider'] if cpu_only else
+                         ['CUDAExecutionProvider', 'CPUExecutionProvider'])
             self._session = ort.InferenceSession(
-                self._model_path,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+                self._model_path, providers=providers)
         except Exception as exc:
             # onnxruntime does NOT silently fall back to CPU when the CUDA
             # provider fails to init (e.g. the same cuBLAS alloc failure as
@@ -295,8 +371,121 @@ class FMInferenceNode(FMInferenceBase):
                 f"forcing CPUExecutionProvider.")
             self._session = ort.InferenceSession(
                 self._model_path, providers=['CPUExecutionProvider'])
-        tag = " [FALLBACK from .pth due to GPU failure]" if fell_back else ""
+        tag = " [FALLBACK due to GPU failure]" if fell_back else ""
         return f"FM ONNX ({self._session.get_providers()}) K={self._K}{tag}"
+
+    # ── NEW (2026-09-13): TensorRT backend ───────────────────────────────────
+
+    def _find_onnx_for_engine(self, engine_path):
+        """Fallback/parity .onnx for an engine: onnx_fallback_path, else
+        <stem>.onnx, else the stem without a _fp32/_tf32/_fp16 suffix."""
+        if self._onnx_fallback_path:
+            return (self._onnx_fallback_path
+                    if os.path.isfile(self._onnx_fallback_path) else None)
+        stem = os.path.splitext(engine_path)[0]
+        candidates = [stem + ".onnx"]
+        for suffix in ("_fp32", "_tf32", "_fp16"):
+            if stem.endswith(suffix):
+                candidates.append(stem[:-len(suffix)] + ".onnx")
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _load_trt_engine(self, engine_path, onnx_path):
+        trt = _import_tensorrt()
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA not available")
+        logger = trt.Logger(trt.Logger.WARNING)
+        with open(engine_path, "rb") as f:
+            self._trt_engine = trt.Runtime(logger).deserialize_cuda_engine(f.read())
+        if self._trt_engine is None:
+            raise RuntimeError("deserialize_cuda_engine returned None "
+                               "(engine built for another TensorRT/GPU?)")
+        self._trt_ctx = self._trt_engine.create_execution_context()
+        # torch tensors are the I/O buffers: plain CUDA memory + memcpy work
+        # on this Jetson, only cuBLAS handle creation is broken.
+        self._trt_dev, self._trt_host = {}, {}
+        for i in range(self._trt_engine.num_io_tensors):
+            name = self._trt_engine.get_tensor_name(i)
+            shape = tuple(self._trt_engine.get_tensor_shape(name))
+            self._trt_dev[name] = torch.empty(
+                shape, dtype=torch.float32, device="cuda")
+            self._trt_host[name] = torch.empty(
+                shape, dtype=torch.float32, pin_memory=True)
+            self._trt_ctx.set_tensor_address(
+                name, self._trt_dev[name].data_ptr())
+        for name, shape in (("input", (1, IMG_WIDTH * IMG_HEIGHT + MOTION_INPUT_SIZE)),
+                            ("noise", (8, PARAM_DIM)), ("candidates", (8, PARAM_DIM))):
+            if name not in self._trt_dev:
+                raise RuntimeError(f"engine has no '{name}' tensor")
+            if tuple(self._trt_dev[name].shape) != shape:
+                raise RuntimeError(f"engine '{name}' shape "
+                                   f"{tuple(self._trt_dev[name].shape)} != {shape}")
+        self._trt_stream = torch.cuda.Stream()
+        self._trt_lock = threading.Lock()
+
+        # Smoke test + parity against the .onnx on CPU (fixed input: a depth
+        # ramp with a near box, like an obstacle, and fixed noise).
+        rng = np.random.default_rng(0)
+        img = np.tile(np.linspace(40, 255, IMG_WIDTH, dtype=np.float32),
+                      (IMG_HEIGHT, 1))
+        img[150:350, 250:420] = 40.0
+        x = np.concatenate([img.reshape(-1),
+                            rng.normal(0, 1, MOTION_INPUT_SIZE).astype(np.float32)])
+        noise = rng.standard_normal((8, PARAM_DIM)).astype(np.float32)
+        out = self._trt_infer(x, noise)
+        if not np.all(np.isfinite(out)):
+            raise RuntimeError("engine produced non-finite output")
+        if not self._trt_parity_check:
+            self.get_logger().warn("[FM] TensorRT parity check DISABLED.")
+            return
+        if onnx_path is None or not HAS_ONNX:
+            raise RuntimeError("parity check needs the .onnx next to the engine "
+                               "(or trt_parity_check:=false)")
+        ref = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+        expected = ref.run(['candidates'], {'input': x.reshape(1, -1),
+                                            'noise': noise})[0]
+        del ref
+        diff = float(np.abs(out - expected).max())
+        if diff > self._trt_parity_tol:
+            raise RuntimeError(
+                f"parity check FAILED: max diff {diff:.3e} vs "
+                f"{os.path.basename(onnx_path)} (tol {self._trt_parity_tol:g})")
+        self.get_logger().info(
+            f"[FM] TensorRT parity OK: max diff {diff:.2e} vs "
+            f"{os.path.basename(onnx_path)} (tol {self._trt_parity_tol:g})")
+
+    def _trt_infer(self, input_flat, noise):
+        """[k, 9] candidates from the engine. k < 8 (anchor mode) is padded to
+        the engine's fixed 8 rows; the extra rows are discarded."""
+        k = noise.shape[0]
+        if k < 8:
+            noise = np.vstack(
+                [noise, np.zeros((8 - k, PARAM_DIM), dtype=np.float32)])
+        with self._trt_lock:
+            self._trt_host["input"].numpy()[:] = input_flat.reshape(1, -1)
+            self._trt_host["noise"].numpy()[:] = noise
+            with torch.cuda.stream(self._trt_stream):
+                self._trt_dev["input"].copy_(self._trt_host["input"],
+                                             non_blocking=True)
+                self._trt_dev["noise"].copy_(self._trt_host["noise"],
+                                             non_blocking=True)
+                if not self._trt_ctx.execute_async_v3(
+                        self._trt_stream.cuda_stream):
+                    raise RuntimeError("TensorRT execute_async_v3 failed")
+                self._trt_host["candidates"].copy_(self._trt_dev["candidates"],
+                                                   non_blocking=True)
+            self._trt_stream.synchronize()
+            return self._trt_host["candidates"].numpy()[:k].copy()
+
+    def _trt_release(self):
+        for attr in ("_trt_ctx", "_trt_engine", "_trt_dev", "_trt_host",
+                     "_trt_stream"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _sample_params(self, input_flat, k=None):
         """[k, 9] raw candidates (body frame, denormalized). k defaults to K;
@@ -308,6 +497,8 @@ class FMInferenceNode(FMInferenceBase):
                 out = self._fm.sample(x, K=k, n_steps=self._n_steps)
             return out.cpu().numpy()
         noise = np.random.randn(k, PARAM_DIM).astype(np.float32)
+        if self._use_trt:   # NEW (2026-09-13)
+            return self._trt_infer(input_flat, noise)
         return self._session.run(
             None, {'input': input_flat.reshape(1, -1), 'noise': noise})[0]
 

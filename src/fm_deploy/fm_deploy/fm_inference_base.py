@@ -57,7 +57,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _THIS_DIR)
 from esdf_ros2 import ESDF
-from min_jerk_planner import MinJerkPlanner, PlannerConfig
+from min_jerk_planner import MinJerkPlanner, PlannerConfig, PlanTimeout  # NEW (2026-09-14): PlanTimeout
 
 # ── Model input geometry (must match the expert recorder & the trainer) ──────
 IMG_WIDTH         = 640
@@ -406,6 +406,25 @@ class FMInferenceBase(Node):
         #    > 0  use this value as the hard cap.
         self.declare_parameter("px4_vel_cap", 0.0)
         self.declare_parameter("depth_max_lag",      0.5)
+        # NEW (2026-09-14): replan cost limits. Defaults = old behaviour
+        # (simulation unchanged); the real-drone launches set 1 / 1.0.
+        #   max_candidates  — optimise only the N best-ranked initial guesses
+        #                     (0 = all K). Candidate #1 is already the best
+        #                     by _rank_by_clearance, and every flight today
+        #                     used cand#1 when a replan succeeded.
+        #   replan_budget_s — wall-clock limit for one replan (0 = none). When
+        #                     exceeded the replan FAILS (old trajectory kept,
+        #                     same as any failed replan) instead of retrying:
+        #                     12:22 flight spent 55 s in one failed replan.
+        self.declare_parameter("max_candidates",     0)
+        self.declare_parameter("replan_budget_s",    0.0)
+        # NEW (2026-09-15, WFEAS): MINCO feasibility (|v| > v_max) weight.
+        # 1.0 = unchanged (simulation / expert). With 1.0 the optimiser plans
+        # ~2-3x faster than v_max, _install_trajectory then stretches the whole
+        # trajectory by k = peak/v_max INCLUDING its start speed, and the next
+        # replan starts from that reduced speed -> the speed ratchets down
+        # (9/15 09:44 real flight: cost 9.6 = offline k 2.8, 0.02-0.07 m/s).
+        self.declare_parameter("w_feasibility",      1.0)
         self.declare_parameter("auto_reverse",      True)
         # "Pure" ablation (2026-07-06): the original NEO-Planner paper has NO
         # escape mode / reactive guards / stuck-detection — only the learned
@@ -481,7 +500,12 @@ class FMInferenceBase(Node):
         self._speed_margin_k = float(self.get_parameter("speed_margin_k").value)
         self._px4_vel_cap    = float(self.get_parameter("px4_vel_cap").value)
         self._depth_max_lag  = float(self.get_parameter("depth_max_lag").value)
-        self._auto_reverse   = bool(self.get_parameter("auto_reverse").value)
+        self._max_candidates = int(self.get_parameter("max_candidates").value)
+        self._replan_budget  = float(self.get_parameter("replan_budget_s").value)
+        self._w_feas         = float(np.clip(                   # NEW (2026-09-15, WFEAS)
+            float(self.get_parameter("w_feasibility").value), 0.01, 1e5))
+        self._traj_stats     = []   # (planned T, peak speed, time scale) per install
+        self._auto_reverse  = bool(self.get_parameter("auto_reverse").value)
         self._use_guards     = bool(self.get_parameter("use_safety_guards").value)
         # look-ahead-only mode (see declare): active only when full guards off.
         self._use_lookahead  = (bool(self.get_parameter("use_lookahead_guard").value)
@@ -519,7 +543,7 @@ class FMInferenceBase(Node):
         cfg.delta_t            = 0.1
         cfg.collision_cost_tol = self._coll_tol
         cfg.opt_tol            = 1e-2
-        cfg.weights            = [1.0, 1.0, 1.0, 10000.0]
+        cfg.weights            = [1.0, 1.0, self._w_feas, 10000.0]  # NEW (2026-09-15, WFEAS): was 1.0
         self._planner          = MinJerkPlanner(cfg)
 
         # arena_bounds -> virtual wall in the ESDF (see esdf_ros2.py): cells
@@ -627,7 +651,17 @@ class FMInferenceBase(Node):
         self.get_logger().info("  FM Inference (standalone, relaxed motion)")
         self.get_logger().info("=" * 62)
         self.get_logger().info(f"  Model         : {os.path.basename(self._model_path)}")
-        self.get_logger().info(f"  Backend       : {backend_str}")
+        # NEW (2026-09-14): colour the Backend line blue so it's easy to spot
+        # (GPU/TensorRT vs CPU/ONNX fallback) in the terminal on hardware
+        # runs. Guarded via getattr — only FMInferenceRealNode defines _c()
+        # (color_output param); plain FMInferenceBase/FMInferenceNode
+        # (simulation) has no such attribute and this stays a no-op there,
+        # so the shared base file's sim behaviour is unchanged.
+        _c = getattr(self, "_c", None)
+        backend_line = f"  Backend       : {backend_str}"
+        if callable(_c):
+            backend_line = f"{_c('blue')}{backend_line}{_c('reset')}"
+        self.get_logger().info(backend_line)
         self.get_logger().info(f"  v_max         : {self._v_max} m/s")
         self.get_logger().info(f"  Goal X        : {self._goal_x} m  alt={self._alt} m")
         # All three are CENTER-OF-MASS clearances (see BODY_RADIUS_M).
@@ -640,6 +674,14 @@ class FMInferenceBase(Node):
             f"| +{self._speed_margin_k:.2f} m per m/s speed margin")
         self.get_logger().info(f"  guard_clear   : {self._guard_clear:.2f} m (center)")
         self.get_logger().info(f"  Replan        : {self._replan_period} s")
+        # NEW (2026-09-14)
+        self.get_logger().info(
+            f"  Replan cost   : candidates "
+            f"{self._max_candidates if self._max_candidates > 0 else 'all'}"
+            f" | budget "
+            f"{f'{self._replan_budget:.1f} s' if self._replan_budget > 0 else 'none'}"
+            f" | OPENBLAS_NUM_THREADS={os.environ.get('OPENBLAS_NUM_THREADS', 'unset')}"
+            f" | w_feasibility {self._w_feas:g}")   # NEW (2026-09-15, WFEAS)
         # Flight-dynamics levers (see the declare block): the setpoint leads the
         # drone by roughly dTf x speed, and PX4 turns that standing position
         # error into extra speed until its own cap saturates.
@@ -1491,49 +1533,80 @@ class FMInferenceBase(Node):
         safe_dis_eff  = safe_dis_base + self._speed_margin_k * speed_now  # center
         self._planner.safe_dis = max(0.0, safe_dis_eff - BODY_RADIUS_M)  # -> edge
         ok = False
-        for shorter in (False, True):
-            self._set_local_target(shorter=shorter,
-                                   ref_pos=sync_state.global_pos[:2])
-            head = self._get_head_state()
-            tail = np.zeros((3, 2))
-            tail[0], tail[1] = self._target_state[0], self._target_state[1]
-            t0 = time.time()
-            try:
-                guesses = self._initial_guesses(
-                    depth_snapshot, sync_state, head, tail)
-            except Exception:
-                continue
-            self._publish_candidate_markers(guesses, head, self._target_state[0])
-            for cand_i, (int_wpts, ts) in enumerate(guesses):
+        # NEW (2026-09-14): one wall-clock budget for the whole replan (both
+        # targets, all candidates, all perturbed retries). None = unlimited.
+        t_budget0 = time.monotonic()
+        self._planner.deadline = (t_budget0 + self._replan_budget
+                                  if self._replan_budget > 0.0 else None)
+        timed_out = False
+        try:
+            for shorter in (False, True):
+                if (self._planner.deadline is not None
+                        and time.monotonic() > self._planner.deadline):
+                    timed_out = True
+                    break
+                self._set_local_target(shorter=shorter,
+                                       ref_pos=sync_state.global_pos[:2])
+                head = self._get_head_state()
+                tail = np.zeros((3, 2))
+                tail[0], tail[1] = self._target_state[0], self._target_state[1]
+                t0 = time.time()
                 try:
-                    self._planner.warm_start_plan(
-                        self._esdf, head, tail, int_wpts, ts)
-                    self._check_plan_quality()
-                    self._validate_planned_traj()
+                    guesses = self._initial_guesses(
+                        depth_snapshot, sync_state, head, tail)
                 except Exception:
                     continue
-                self._replan_count += 1
-                avg_inf = (np.mean(self._inference_times)
-                           if self._inference_times else 0)
-                cand_str = (f" cand#{cand_i + 1}/{len(guesses)}"
-                            if len(guesses) > 1 else "")
-                self.get_logger().info(
-                    f"[INF] Replan ok #{self._replan_count} "
-                    f"cost={self._planner.final_cost:.1f} "
-                    f"t={(time.time()-t0)*1000:.0f}ms (inf={avg_inf:.1f}ms)"
-                    f"{cand_str}{' short' if shorter else ''}",
-                    throttle_duration_sec=1.0)
-                self._publish_flown_marker()
-                ok = True
-                break
-            if ok:
-                break
+                self._publish_candidate_markers(guesses, head,
+                                                self._target_state[0])
+                # NEW (2026-09-14): keep only the best-ranked N (markers above
+                # still show all K for debugging).
+                n_total = len(guesses)
+                if self._max_candidates > 0:
+                    guesses = guesses[:self._max_candidates]
+                for cand_i, (int_wpts, ts) in enumerate(guesses):
+                    if (self._planner.deadline is not None
+                            and time.monotonic() > self._planner.deadline):
+                        timed_out = True
+                        break
+                    try:
+                        self._planner.warm_start_plan(
+                            self._esdf, head, tail, int_wpts, ts)
+                        self._check_plan_quality()
+                        self._validate_planned_traj()
+                    except PlanTimeout:
+                        timed_out = True
+                        break
+                    except Exception:
+                        continue
+                    ok = True
+                    break
+                if ok or timed_out:
+                    break
+        finally:
+            self._planner.deadline = None
+
+        if ok:
+            self._replan_count += 1
+            avg_inf = (np.mean(self._inference_times)
+                       if self._inference_times else 0)
+            cand_str = (f" cand#{cand_i + 1}/{n_total}"
+                        if n_total > 1 else "")
+            self.get_logger().info(
+                f"[INF] Replan ok #{self._replan_count} "
+                f"cost={self._planner.final_cost:.1f} "
+                f"t={(time.time()-t0)*1000:.0f}ms (inf={avg_inf:.1f}ms)"
+                f"{cand_str}{' short' if shorter else ''}",
+                throttle_duration_sec=1.0)
+            self._publish_flown_marker()
 
         if not ok:
             self._replan_fail_count += 1
             self._map_stall_fails   += 1
+            budget_str = (
+                f" — time budget {self._replan_budget:.1f} s exceeded after "
+                f"{time.monotonic() - t_budget0:.2f} s" if timed_out else "")
             self.get_logger().warn(
-                f"[INF] Replan failed ({self._replan_fail_count}x)")
+                f"[INF] Replan failed ({self._replan_fail_count}x){budget_str}")
             # Runs in BOTH modes and is checked BEFORE escape, because
             # _enter_escape() zeroes _replan_fail_count (see _map_stall_fails).
             if self._map_stall_fails >= STUCK_MAP_RESET_FAILS:
@@ -1548,6 +1621,26 @@ class FMInferenceBase(Node):
 
         state_cmd = self._planner.get_full_state_cmd(hz=self._cmd_hz)
         self._install_trajectory(state_cmd, float(np.sum(self._planner.ts)))
+        # NEW (2026-09-15, WFEAS): what was actually installed. scale k > 1
+        # means the start speed of this trajectory was divided by k.
+        try:
+            with self._traj_lock:
+                T_plan = float(self._traj.base_total_time)
+                k      = float(self._traj.time_scale)
+                v0     = float(np.linalg.norm(self._traj.state_cmd[0, 1])) / k
+            peak = k * self._v_max if k > 1.0 else float(
+                np.max(np.linalg.norm(state_cmd[:, 1, :], axis=1)))
+            self._traj_stats.append((T_plan, peak, k))
+            if len(self._traj_stats) > 2000:
+                self._traj_stats.pop(0)
+            self.get_logger().info(
+                f"[TRAJ] T={T_plan:.1f}s peak={peak:.2f}m/s scale k={k:.2f} "
+                f"-> flown over {T_plan * k:.1f}s | start v={v0:.2f} "
+                f"(head {float(np.linalg.norm(self._planner.head_state[1])):.2f}) "
+                f"| w_feas {self._w_feas:g}",
+                throttle_duration_sec=1.0)
+        except Exception:
+            pass
 
     def _install_trajectory(self, state_cmd, base_total_time):
         peak = 0.0
@@ -1920,6 +2013,13 @@ class FMInferenceBase(Node):
             f"post-check {self._n_graze_reject}, tightest speed cap "
             + (f"{self._v_limited_min:.2f} m/s" if self._v_limited_min
                is not None else "none"))
+        if self._traj_stats:   # NEW (2026-09-15, WFEAS)
+            a = np.array(self._traj_stats)
+            self.get_logger().info(
+                f"[TRAJ] {len(a)} installs: planned T median {np.median(a[:, 0]):.1f}s, "
+                f"peak median {np.median(a[:, 1]):.2f} m/s, time scale k median "
+                f"{np.median(a[:, 2]):.2f} (max {np.max(a[:, 2]):.2f}) | "
+                f"w_feasibility {self._w_feas:g}")
         if self._abort_reason is not None:
             self.get_logger().error(f"[INF] DONE (ABORTED: {self._abort_reason})")
         else:

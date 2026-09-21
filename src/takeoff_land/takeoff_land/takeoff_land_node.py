@@ -39,6 +39,21 @@ tagged with "NEW" comments inline so they're easy to find/review:
        cannot physically switch out of OFFBOARD — the detection logic above
        would never fire no matter what this code does.
 
+NEW (2026-09-10) — kill switch & unexpected-disarm safety:
+    4. The pilot's KILL switch (RC_MAP_KILL_SW, ch11) is read from
+       /mavros/rc/in. From the ARMING phase on, seeing it engaged is latched
+       for the rest of the process: setpoints stop at once, the node asks PX4
+       for AUTO.LAND (PX4 keeps the vehicle armed for COM_KILL_DISARM = 5 s
+       after a kill and restores the motors if the switch is reverted inside
+       that window — this makes such a revert resume in LAND, never in this
+       OFFBOARD mission), keeps requesting a normal (non-forced) DISARM, which
+       PX4 only accepts once landed, and exits. It never arms again and never
+       re-enters OFFBOARD.
+    5. A disarm this node did not request during the mission is terminal too:
+       setpoints stop, no mode change, exit. _wait_altitude() previously had
+       no disarm check and kept streaming the takeoff setpoint for up to 30 s.
+    6. The node refuses to arm while the kill switch is engaged.
+
 FSM FLOW:
     IDLE -> (connect) -> (EKF stable -> ground_z) -> (warm-up stream)
          -> ARM -> OFFBOARD -> TAKEOFF (ground_z+target_alt) -> HOVER
@@ -53,8 +68,10 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import (  # NEW: raw RC input is a BEST_EFFORT topic
+    QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy)
 
-from mavros_msgs.msg import PositionTarget
+from mavros_msgs.msg import PositionTarget, RCIn  # NEW: RCIn for the switch check
 from mavros_msgs.srv import CommandBool, ParamGet, ParamPull, SetMode  # NEW: param srvs for COM_RC_OVERRIDE check
 from rcl_interfaces.msg import ParameterType  # NEW: mavros2 mirrors FCU params as ROS params
 from rcl_interfaces.srv import GetParameters  # NEW
@@ -103,6 +120,20 @@ class TakeoffLandNode(Node):
         self.declare_parameter("auto_land_mode",     True)
         self.declare_parameter("rc_override_enabled", True)  # abort if RC takes over
         self.declare_parameter("verify_rc_override_param", True)  # NEW: verify PX4 COM_RC_OVERRIDE before flying
+
+        # ── NEW: the pilot's mode switch must already be in the OFFBOARD slot
+        # before the propellers are allowed to spin. See
+        # _check_rc_offboard_position() for why.
+        self.declare_parameter("require_rc_offboard",  True)
+        self.declare_parameter("rc_mode_channel",      5)      # = RC_MAP_FLTMODE
+        self.declare_parameter("rc_offboard_pwm",      1499)   # measured slot centre
+        self.declare_parameter("rc_offboard_tol",      150)    # +/- us accepted
+        self.declare_parameter("rc_offboard_timeout",  20.0)   # s to wait for it
+        # ── NEW (2026-09-10): kill switch. SwF on the AT10II drives ch11 =
+        # RC_MAP_KILL_SW; measured 1065 us (off) / 1933 us (on).
+        self.declare_parameter("kill_switch_enabled",  True)
+        self.declare_parameter("kill_channel",         11)     # = RC_MAP_KILL_SW
+        self.declare_parameter("kill_on_pwm",          1500)   # pwm above this = engaged
         self.declare_parameter("max_pos_error",      1.0)   # m — max horizontal drift from home
         self.declare_parameter("max_vz",             3.0)   # m/s — max vz during hover/descent
         self.declare_parameter("max_alt_error",      1.5)   # m — max altitude deviation during hover
@@ -160,6 +191,20 @@ class TakeoffLandNode(Node):
         self._auto_land       = bool(self.get_parameter("auto_land_mode").value)
         self._rc_override_en  = bool(self.get_parameter("rc_override_enabled").value)
         self._verify_rc_param = bool(self.get_parameter("verify_rc_override_param").value)  # NEW
+        self._require_rc_offb = bool(self.get_parameter("require_rc_offboard").value)    # NEW
+        self._rc_mode_ch      = int(self.get_parameter("rc_mode_channel").value)         # NEW
+        self._rc_offb_pwm     = int(self.get_parameter("rc_offboard_pwm").value)         # NEW
+        self._rc_offb_tol     = int(self.get_parameter("rc_offboard_tol").value)         # NEW
+        self._rc_offb_to      = float(self.get_parameter("rc_offboard_timeout").value)   # NEW
+        self._rc_channels     = []                                                       # NEW
+        self._kill_en         = bool(self.get_parameter("kill_switch_enabled").value)  # NEW (2026-09-10)
+        self._kill_ch         = int(self.get_parameter("kill_channel").value)          # NEW
+        self._kill_on_pwm     = int(self.get_parameter("kill_on_pwm").value)           # NEW
+        self._kill_pwm        = None    # NEW: last raw value on the kill channel
+        self._kill_hits       = 0       # NEW: consecutive "engaged" samples
+        self._kill_now        = False   # NEW: live, debounced switch state
+        self._kill_watch      = False   # NEW: latching enabled from the ARMING phase on
+        self._kill_latched    = False   # NEW: engaged after that -> terminal
         self._max_pos_error   = float(self.get_parameter("max_pos_error").value)
         self._max_vz          = float(self.get_parameter("max_vz").value)
         self._max_alt_error   = float(self.get_parameter("max_alt_error").value)
@@ -194,6 +239,8 @@ class TakeoffLandNode(Node):
         self._in_offboard_mission = False
         # Set to True the moment an unexpected mode change is detected.
         self._rc_override         = False
+        # NEW (2026-09-10): a disarm this node did not request during the mission.
+        self._disarm_abort        = False
         # NEW: Set to True the moment the FCU/MAVROS link drops during a mission.
         self._link_lost           = False
 
@@ -223,6 +270,15 @@ class TakeoffLandNode(Node):
 
         self.create_subscription(String, "/px4/state",   self._cb_state,   10)
         self.create_subscription(String, "/px4/sensors", self._cb_sensors, 10)
+
+        # NEW: raw RC channels for _check_rc_offboard_position(). MAVROS
+        # publishes this BEST_EFFORT, so the QoS has to match or nothing
+        # ever arrives.
+        self.create_subscription(
+            RCIn, "/mavros/rc/in", self._cb_rc_in,
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                       history=HistoryPolicy.KEEP_LAST, depth=5,
+                       durability=DurabilityPolicy.VOLATILE))
 
         self._arming_client = self.create_client(CommandBool, "/mavros/cmd/arming")
         self._mode_client   = self.create_client(SetMode,     "/mavros/set_mode")
@@ -257,9 +313,22 @@ class TakeoffLandNode(Node):
             d = json.loads(msg.data)
             prev_mode       = self._mode
             prev_connected  = self._connected  # NEW
+            prev_armed      = self._armed      # NEW (2026-09-10)
             self._connected = d.get("connected", False)
             self._armed     = d.get("armed",     False)
             self._mode      = d.get("mode",      "")
+
+            # NEW (2026-09-10): a disarm during the mission that this node did
+            # not request (kill-switch timeout, PX4 failsafe, the pilot's arm
+            # switch) ends the mission. _in_offboard_mission is cleared before
+            # every hand-off where a disarm is expected (AUTO.LAND).
+            if (self._in_offboard_mission and prev_armed and not self._armed
+                    and not self._disarm_abort):
+                self._disarm_abort = True
+                self._stream_on = False
+                self.get_logger().error(
+                    "[ARM] UNEXPECTED DISARM during active mission — "
+                    "setpoints stopped.")
 
             # NEW: FCU/MAVROS link-loss detection during an active mission.
             # If telemetry drops while we're supposed to be commanding the
@@ -271,12 +340,17 @@ class TakeoffLandNode(Node):
                     "[LINK] FCU DISCONNECTED during active mission!")
 
             # RC override detection: unexpected mode change while we are flying.
-            # "AUTO.LAND" is excluded because we set it ourselves during landing.
+            # AUTO.LAND is NOT excluded any more (2026-09-09). Every place this
+            # node sets AUTO.LAND itself clears _in_offboard_mission FIRST, so
+            # the guard above already covers that case. Excluding the mode as
+            # well meant a pilot flicking the switch to Land went undetected:
+            # setpoints kept streaming, and flicking back to OFFBOARD silently
+            # resumed the mission mid-descent.
             # Empty string is excluded to avoid false triggers on startup.
             if (self._rc_override_en and
                     self._in_offboard_mission and
                     prev_mode == "OFFBOARD" and
-                    self._mode not in ("OFFBOARD", "AUTO.LAND", "")):
+                    self._mode not in ("OFFBOARD", "")):
                 self._rc_override = True
                 self.get_logger().error(
                     f"[RC] MODE CHANGE DETECTED: OFFBOARD -> {self._mode}")
@@ -314,7 +388,8 @@ class TakeoffLandNode(Node):
         # instead of waiting for the mission thread's polling loop to notice
         # and flip _stream_on off (previously up to ~0.1s of stale setpoints
         # could still go out after the override was already known about).
-        if not self._stream_on or self._rc_override or self._link_lost:
+        if (not self._stream_on or self._rc_override or self._link_lost
+                or self._kill_latched or self._disarm_abort):  # NEW (2026-09-10)
             return
         msg = PositionTarget()
         msg.header.stamp     = self.get_clock().now().to_msg()
@@ -524,12 +599,192 @@ class TakeoffLandNode(Node):
         # Informational: what PX4 will do if our setpoint stream stops
         # (offboard-loss failsafe). Meaning of the value depends on PX4
         # version — confirm in QGC that it is Hold / Land / Return.
-        obl = self._get_px4_param_int("COM_OBL_ACT", timeout=3.0)
+        obl = self._get_px4_param_int("COM_OBL_RC_ACT", timeout=3.0)
         if obl is not None:
             self.get_logger().info(
-                f"[SAFETY] COM_OBL_ACT={obl} (offboard-loss failsafe action — "
+                f"[SAFETY] COM_OBL_RC_ACT={obl} (offboard-loss failsafe action — "
                 "confirm in QGC this maps to Hold/Land/Return for your PX4 version).")
         return True
+
+    # ── NEW: require the RC mode switch to sit in the OFFBOARD slot ──────────
+
+    def _cb_rc_in(self, msg):
+        """Raw RC channels: the OFFBOARD-slot check and the kill switch."""
+        try:
+            self._rc_channels = list(msg.channels)
+        except Exception:
+            return
+        self._update_kill_switch(self._rc_channels)
+
+    # ── NEW (2026-09-10): kill switch ─────────────────────────────────────────
+    def _update_kill_switch(self, ch):
+        """Debounced kill-switch state from the raw RC channels.
+
+        Two consecutive samples above kill_on_pwm count as engaged, so one
+        corrupted frame cannot end a mission. A false positive is safe anyway:
+        it only stops this node's setpoints and asks PX4 for LAND — it never
+        cuts the motors. Once _kill_watch is set (ARMING phase), the first
+        engaged state is latched for the rest of this process."""
+        if not self._kill_en:
+            return
+        idx = self._kill_ch - 1
+        if not (0 <= idx < len(ch)):
+            return
+        pwm = int(ch[idx])
+        self._kill_pwm = pwm
+        self._kill_hits = self._kill_hits + 1 if pwm > self._kill_on_pwm else 0
+        self._kill_now = self._kill_hits >= 2
+        if self._kill_now and self._kill_watch and not self._kill_latched:
+            self._kill_latched = True
+            self._stream_on = False
+            self.get_logger().error(
+                f"[KILL] KILL SWITCH ENGAGED (ch{self._kill_ch}={pwm}) — "
+                "setpoints stopped. This node will only request LAND + DISARM "
+                "from now on.")
+
+    def _kill_abort(self):
+        """Terminal reaction to the kill switch (pilot's decision, 2026-09-10).
+
+        PX4 v1.17 keeps the vehicle ARMED for COM_KILL_DISARM (5 s) after a
+        kill and restores the motors if the switch is reverted inside that
+        window. So: 1) setpoints are already stopped, 2) ask for AUTO.LAND so
+        that a revert resumes into LAND and never into this OFFBOARD mission
+        (PX4's offboard-loss failsafe COM_OBL_RC_ACT would get there too, after
+        COM_OF_LOSS_T), 3) keep asking for a normal DISARM, which PX4 only
+        accepts once landed, 4) exit without ever arming or entering OFFBOARD
+        again."""
+        self._stream_on           = False
+        self._in_offboard_mission = False
+        self._announce_phase(
+            "ABORT", "KILL SWITCH — motors cut by the pilot", warn=True)
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[KILL] MISSION ABORTED — kill switch engaged. Requesting AUTO.LAND "
+            "(a revert inside PX4's kill window lands) and DISARM.")
+        self.get_logger().error(
+            "[KILL] This node will NOT arm or enter OFFBOARD again.")
+        self.get_logger().error("=" * 62)
+        if self._armed:
+            for _ in range(3):
+                if self._set_mode("AUTO.LAND"):
+                    break
+                time.sleep(0.3)
+        t0 = time.time()
+        while rclpy.ok() and self._armed and time.time() - t0 < 15.0:
+            self._arm(False)   # normal disarm: PX4 rejects it while airborne
+            time.sleep(1.0)
+        if self._armed:
+            self.get_logger().error(
+                "[KILL] Still ARMED after 15 s — PX4 did not accept DISARM "
+                "(not landed yet?). Pilot: use the RC.")
+        else:
+            self.get_logger().error("[KILL] Drone is DISARMED.")
+        self._safe_shutdown()
+
+    def _disarm_stop(self):
+        """Terminal reaction to a disarm this node did not request."""
+        self._stream_on           = False
+        self._in_offboard_mission = False
+        self._announce_phase("ABORT", "UNEXPECTED DISARM", warn=True)
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[ARM] MISSION ABORTED — the drone was disarmed without this node "
+            "asking. Setpoints stopped; no mode change; no re-arm.")
+        self.get_logger().error("=" * 62)
+        self._safe_shutdown()
+
+    def _check_kill_switch_released(self) -> bool:
+        """Refuse to arm while the kill switch is engaged or unreadable."""
+        if not self._kill_en:
+            self.get_logger().warn(
+                "[SAFETY] kill_switch_enabled:=false — the kill switch is NOT "
+                "watched by this node.")
+            return True
+        t0 = time.time()
+        last = 0.0
+        while rclpy.ok() and time.time() - t0 < self._rc_offb_to:
+            now = time.time()
+            if self._kill_pwm is not None and not self._kill_now:
+                self.get_logger().info(
+                    f"[SAFETY] Kill switch released "
+                    f"(ch{self._kill_ch}={self._kill_pwm}). OK.")
+                return True
+            if now - last >= 3.0:
+                last = now
+                if self._kill_pwm is None:
+                    self.get_logger().warn(
+                        f"[SAFETY] No RC data for kill channel ch{self._kill_ch} "
+                        f"yet ({self._rc_offb_to - (now - t0):.0f}s left)")
+                else:
+                    self.get_logger().warn(
+                        f"[SAFETY] KILL SWITCH IS ENGAGED "
+                        f"(ch{self._kill_ch}={self._kill_pwm}) — release it "
+                        f"({self._rc_offb_to - (now - t0):.0f}s left)")
+            time.sleep(0.2)
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[SAFETY] KILL SWITCH ENGAGED OR UNREADABLE — REFUSING TO ARM.")
+        self.get_logger().error("=" * 62)
+        return False
+
+    def _check_rc_offboard_position(self) -> bool:
+        """Refuse to arm unless the pilot's mode switch is ALREADY in the
+        OFFBOARD slot.
+
+        WHY: this node asks PX4 for OFFBOARD over MAVLink, and PX4 grants it
+        no matter where the RC mode switch happens to be. Flown that way the
+        switch and the actual flight mode disagree, and the pilot's first
+        "take over" flick can land on the position the switch is already in
+        — a no-op at the exact moment it matters. Starting in OFFBOARD makes
+        every other switch position a live escape route.
+        """
+        if not self._require_rc_offb:
+            self.get_logger().warn(
+                "[SAFETY] require_rc_offboard:=false — the RC mode switch "
+                "position is NOT checked. Switch and flight mode may "
+                "disagree.")
+            return True
+
+        lo = self._rc_offb_pwm - self._rc_offb_tol
+        hi = self._rc_offb_pwm + self._rc_offb_tol
+        idx = self._rc_mode_ch - 1
+        self.get_logger().info(
+            f"[SAFETY] Waiting for the RC mode switch to be in OFFBOARD "
+            f"(ch{self._rc_mode_ch} within {lo}-{hi})...")
+        t0 = time.time()
+        last = 0.0
+        while rclpy.ok() and time.time() - t0 < self._rc_offb_to:
+            ch = self._rc_channels
+            now = time.time()
+            if ch and 0 <= idx < len(ch):
+                pwm = int(ch[idx])
+                if lo <= pwm <= hi:
+                    self.get_logger().info(
+                        f"[SAFETY] RC mode switch is in OFFBOARD "
+                        f"(ch{self._rc_mode_ch}={pwm}). OK.")
+                    return True
+                if now - last >= 3.0:
+                    last = now
+                    self.get_logger().warn(
+                        f"[SAFETY] Move the RC mode switch to OFFBOARD: "
+                        f"ch{self._rc_mode_ch}={pwm}, need {lo}-{hi} "
+                        f"({self._rc_offb_to - (now - t0):.0f}s left)")
+            elif now - last >= 3.0:
+                last = now
+                self.get_logger().warn(
+                    f"[SAFETY] No RC data on /mavros/rc/in yet "
+                    f"({self._rc_offb_to - (now - t0):.0f}s left)")
+            time.sleep(0.2)
+
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[SAFETY] RC MODE SWITCH IS NOT IN THE OFFBOARD SLOT — "
+            "REFUSING TO ARM.")
+        self.get_logger().error(
+            "[SAFETY] Put the switch in OFFBOARD before starting, so that "
+            "flicking it anywhere else is a real takeover.")
+        self.get_logger().error("=" * 62)
+        return False
 
     # ── GPS quality pre-arm gate ──────────────────────────────────────────────
     def _gps_quality_problem(self):
@@ -756,6 +1011,8 @@ class TakeoffLandNode(Node):
                 return False
             if self._link_lost:  # NEW
                 return False
+            if self._kill_latched or self._disarm_abort:  # NEW (2026-09-10)
+                return False
             if not self._sanity_check(target_z, check_alt=False, check_vz=False):
                 return False
             z  = float(self._pos[2])
@@ -854,6 +1111,8 @@ class TakeoffLandNode(Node):
         arm_c = self._c("red") if self._armed else self._c("green")
         parts.append(f"{arm_c}{'ARMED' if self._armed else 'disarmed'}{rst}")
         parts.append(f"mode={self._mode or '?'}")
+        if self._kill_now:  # NEW (2026-09-10)
+            parts.append(f"{self._c('red')}KILL{rst}")
 
         if self._gps_q:
             sats = self._gps_q.get("satellites")
@@ -948,6 +1207,17 @@ class TakeoffLandNode(Node):
             "PILOT: hold the RC with the mode switch ready. Next step ARMS "
             "the drone.", warn=True)
 
+        # 5b. NEW: the pilot's mode switch must already be in the OFFBOARD
+        # slot, so that every other switch position stays a live escape route.
+        if not self._check_rc_offboard_position():
+            return self._safe_shutdown()
+
+        # 5c. NEW (2026-09-10): never arm with the kill switch engaged; from
+        # here on any engagement of it is terminal (see _kill_abort).
+        if not self._check_kill_switch_released():
+            return self._safe_shutdown()
+        self._kill_watch = True
+
         # 5. Warm-up setpoint stream
         self._announce_phase(
             "ARMING",
@@ -955,17 +1225,23 @@ class TakeoffLandNode(Node):
             warn=True)
         self._phase_note("warming up setpoint stream (~2s)...")
         time.sleep(2.0)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
 
         # 6. ARM
         self._phase_note("sending ARM...")
         t0 = time.time(); armed = False
         while rclpy.ok() and time.time() - t0 < self._arm_timeout:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
             if self._arm(True):
                 time.sleep(0.8)
                 if self._armed:
                     armed = True
                     break
             time.sleep(1.5)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
         if not armed:
             self.get_logger().error("[T/L] Arming failed — aborting.")
             return self._safe_shutdown()
@@ -977,8 +1253,12 @@ class TakeoffLandNode(Node):
             return self._safe_shutdown()
         t0 = time.time()
         while rclpy.ok() and self._mode != "OFFBOARD" and time.time() - t0 < 5.0:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
             self._set_mode("OFFBOARD")
             time.sleep(0.3)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
         if self._mode != "OFFBOARD":
             self.get_logger().error("[T/L] PX4 did not enter OFFBOARD — disarming & aborting.")
             self._arm(False)
@@ -986,6 +1266,8 @@ class TakeoffLandNode(Node):
 
         # RC override detection is active from here until AUTO.LAND handoff
         self._in_offboard_mission = True
+        if not self._armed:  # NEW (2026-09-10): disarmed before takeoff began
+            return self._disarm_stop()
 
         # 8. TAKEOFF
         self._mission = self.STATE_TAKEOFF
@@ -996,6 +1278,10 @@ class TakeoffLandNode(Node):
             f"{self._max_pos_error:.1f} m, alt err {self._max_alt_error:.1f} m")
         self._set_sp(self._home_x, self._home_y, takeoff_z, self._home_yaw)
         stable = self._wait_altitude(takeoff_z, tol=0.15, timeout=30.0)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
+        if self._disarm_abort:  # NEW (2026-09-10)
+            return self._disarm_stop()
         if self._rc_override:
             return self._rc_override_abort()
         if self._link_lost:  # NEW
@@ -1019,6 +1305,10 @@ class TakeoffLandNode(Node):
             f"z={takeoff_z:.2f} m before landing")
         t_h = time.time()
         while rclpy.ok() and time.time() - t_h < self._hover_time:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
+            if self._disarm_abort:  # NEW (2026-09-10)
+                return self._disarm_stop()
             if self._rc_override:
                 return self._rc_override_abort()
             if self._link_lost:  # NEW
@@ -1043,6 +1333,10 @@ class TakeoffLandNode(Node):
             f"controlled descent at {self._descent_speed:.2f} m/s to "
             f"{self._land_handoff:.2f} m above ground, then AUTO.LAND")
         self._controlled_descent(takeoff_z)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
+        if self._disarm_abort:  # NEW (2026-09-10)
+            return self._disarm_stop()
         if self._rc_override:
             return self._rc_override_abort()
         if self._link_lost:  # NEW
@@ -1060,6 +1354,8 @@ class TakeoffLandNode(Node):
             self._set_mode("AUTO.LAND")
             t0 = time.time()
             while rclpy.ok() and self._armed and time.time() - t0 < 20.0:
+                if self._kill_latched:  # NEW (2026-09-10): stream is already off
+                    return self._kill_abort()
                 self.get_logger().info(
                     f"{self._c('cyan')}[LANDING]{self._c('reset')} AUTO.LAND "
                     f"in progress, waiting for auto-disarm... "
@@ -1086,6 +1382,8 @@ class TakeoffLandNode(Node):
         target_z = self._ground_z + self._land_handoff
         z = from_z
         while rclpy.ok() and z > target_z:
+            if self._kill_latched or self._disarm_abort:  # NEW (2026-09-10)
+                return
             if self._rc_override:
                 return
             if self._link_lost:  # NEW

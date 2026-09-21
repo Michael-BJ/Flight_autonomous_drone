@@ -43,6 +43,16 @@ RC OVERRIDE SAFETY (2026-07-27):
     prior bug where switching mode back to OFFBOARD via RC could cause
     this node to instantly resume commanding the last hold/descent
     setpoint — an unwanted autonomous movement.
+
+KILL SWITCH / UNEXPECTED DISARM (2026-09-10):
+    The kill switch (RC_MAP_KILL_SW, ch11, read from /mavros/rc/in) is watched
+    for the whole life of this node — it only ever runs with the drone in the
+    air. Engaged (two consecutive samples) = latched: setpoints stop at once,
+    the node asks PX4 for AUTO.LAND (a revert inside PX4's 5 s COM_KILL_DISARM
+    window then resumes in LAND, never in this node's OFFBOARD hold), keeps
+    requesting a normal DISARM (PX4 only accepts it once landed) and exits.
+    A disarm while holding OFFBOARD that this node did not request is
+    terminal too: setpoints stop, no mode change, exit.
 """
 import json
 import threading
@@ -52,8 +62,10 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import (  # NEW (2026-09-10): raw RC input is BEST_EFFORT
+    QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy)
 
-from mavros_msgs.msg import PositionTarget
+from mavros_msgs.msg import PositionTarget, RCIn  # NEW (2026-09-10): kill switch
 from mavros_msgs.srv import CommandBool, SetMode
 from std_msgs.msg import String
 
@@ -68,12 +80,26 @@ class HoldPositionNode(Node):
         self.declare_parameter("land_handoff_alt", 0.25) # m above ground -> AUTO.LAND
         self.declare_parameter("auto_land",       True)   # hand off to AUTO.LAND
         self.declare_parameter("cmd_hz",          50)
+        # NEW (2026-09-10): kill switch. AT10II SwF -> ch11 = RC_MAP_KILL_SW,
+        # measured 1065 us (off) / 1933 us (on).
+        self.declare_parameter("kill_switch_enabled", True)
+        self.declare_parameter("kill_channel",        11)
+        self.declare_parameter("kill_on_pwm",         1500)
 
         self._hold_time     = float(self.get_parameter("hold_time").value)
         self._descent_speed = float(self.get_parameter("descent_speed").value)
         self._land_handoff  = float(self.get_parameter("land_handoff_alt").value)
         self._auto_land     = bool(self.get_parameter("auto_land").value)
         self._cmd_hz        = int(self.get_parameter("cmd_hz").value)
+        self._kill_en       = bool(self.get_parameter("kill_switch_enabled").value)  # NEW
+        self._kill_ch       = int(self.get_parameter("kill_channel").value)          # NEW
+        self._kill_on_pwm   = int(self.get_parameter("kill_on_pwm").value)           # NEW
+        self._kill_pwm      = None    # NEW: last raw value on the kill channel
+        self._kill_hits     = 0       # NEW: consecutive "engaged" samples
+        self._kill_now      = False   # NEW: live, debounced switch state
+        self._kill_watch    = True    # NEW: this node only runs airborne -> watch from start
+        self._kill_latched  = False   # NEW: engaged -> terminal
+        self._disarm_abort  = False   # NEW: disarm we did not request while holding
 
         # State from sensor reader
         self._connected = False
@@ -111,6 +137,12 @@ class HoldPositionNode(Node):
 
         self.create_subscription(String, "/px4/state",   self._cb_state,   10)
         self.create_subscription(String, "/px4/sensors", self._cb_sensors, 10)
+        # NEW (2026-09-10): raw RC for the kill switch (BEST_EFFORT, as MAVROS).
+        self.create_subscription(
+            RCIn, "/mavros/rc/in", self._cb_rc_in,
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                       history=HistoryPolicy.KEEP_LAST, depth=5,
+                       durability=DurabilityPolicy.VOLATILE))
 
         self._arming_client = self.create_client(CommandBool, "/mavros/cmd/arming")
         self._mode_client   = self.create_client(SetMode,     "/mavros/set_mode")
@@ -129,16 +161,29 @@ class HoldPositionNode(Node):
         try:
             d = json.loads(msg.data)
             prev_mode        = self._mode
+            prev_armed       = self._armed   # NEW (2026-09-10)
             self._connected  = d.get("connected", False)
             self._armed      = d.get("armed",     False)
             self._mode       = d.get("mode",      "")
 
+            # NEW (2026-09-10): a disarm while holding OFFBOARD that this node
+            # did not request is terminal (_in_offboard is cleared before the
+            # AUTO.LAND hand-off, where a disarm is expected).
+            if (self._in_offboard and prev_armed and not self._armed
+                    and not self._disarm_abort):
+                self._disarm_abort = True
+                self._stream_on = False
+                self.get_logger().error(
+                    "[HOLD] UNEXPECTED DISARM while holding — setpoints stopped.")
+
             # RC override detection: unexpected mode change while we hold
-            # OFFBOARD. "AUTO.LAND" is excluded because we set it ourselves
-            # during the final handoff.
+            # OFFBOARD. AUTO.LAND is NOT excluded any more (2026-09-09): the
+            # final handoff clears _in_offboard FIRST, so the guard above
+            # already covers it, and a pilot flicking the switch to Land now
+            # aborts the hold like any other takeover.
             if (self._in_offboard and
                     prev_mode == "OFFBOARD" and
-                    self._mode not in ("OFFBOARD", "AUTO.LAND", "")):
+                    self._mode not in ("OFFBOARD", "")):
                 if not self._rc_override:
                     self.get_logger().error(
                         f"[HOLD] MODE CHANGE DETECTED: OFFBOARD -> {self._mode}")
@@ -167,12 +212,78 @@ class HoldPositionNode(Node):
         except Exception:
             pass
 
+    # ── NEW (2026-09-10): kill switch ─────────────────────────────────────────
+
+    def _cb_rc_in(self, msg):
+        """Debounced kill-switch state from the raw RC channels. Two
+        consecutive samples above kill_on_pwm = engaged; latched for good."""
+        if not self._kill_en:
+            return
+        try:
+            ch = list(msg.channels)
+        except Exception:
+            return
+        idx = self._kill_ch - 1
+        if not (0 <= idx < len(ch)):
+            return
+        pwm = int(ch[idx])
+        self._kill_pwm = pwm
+        self._kill_hits = self._kill_hits + 1 if pwm > self._kill_on_pwm else 0
+        self._kill_now = self._kill_hits >= 2
+        if self._kill_now and self._kill_watch and not self._kill_latched:
+            self._kill_latched = True
+            self._stream_on = False
+            self.get_logger().error(
+                f"[KILL] KILL SWITCH ENGAGED (ch{self._kill_ch}={pwm}) — "
+                "setpoints stopped. Only LAND + DISARM will be requested.")
+
+    def _kill_abort(self):
+        """Terminal reaction to the kill switch: setpoints already stopped;
+        ask for AUTO.LAND (so a revert inside PX4's kill window lands); keep
+        requesting a normal DISARM (PX4 only accepts it once landed); exit
+        without ever entering OFFBOARD again."""
+        self._stream_on   = False
+        self._in_offboard = False
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[KILL] HOLD ABORTED — kill switch engaged. Requesting AUTO.LAND "
+            "and DISARM. This node will NOT command the drone otherwise.")
+        self.get_logger().error("=" * 62)
+        if self._armed:
+            for _ in range(3):
+                if self._set_mode("AUTO.LAND"):
+                    break
+                time.sleep(0.3)
+        t0 = time.time()
+        while rclpy.ok() and self._armed and time.time() - t0 < 15.0:
+            self._arm(False)   # normal disarm: PX4 rejects it while airborne
+            time.sleep(1.0)
+        if self._armed:
+            self.get_logger().error(
+                "[KILL] Still ARMED after 15 s — PX4 did not accept DISARM "
+                "(not landed yet?). Pilot: use the RC.")
+        else:
+            self.get_logger().error("[KILL] Drone is DISARMED.")
+        self._safe_shutdown()
+
+    def _disarm_stop(self):
+        """Terminal reaction to a disarm this node did not request."""
+        self._stream_on   = False
+        self._in_offboard = False
+        self.get_logger().error("=" * 62)
+        self.get_logger().error(
+            "[HOLD] ABORTED — the drone was disarmed without this node asking. "
+            "Setpoints stopped; no mode change.")
+        self.get_logger().error("=" * 62)
+        self._safe_shutdown()
+
     # ── setpoint stream ───────────────────────────────────────────────────────
 
     def _publish_sp(self):
         # Stop the instant an override is latched, don't wait for the
         # mission thread's polling loop to notice and flip _stream_on off.
-        if not self._stream_on or self._rc_override:
+        if (not self._stream_on or self._rc_override
+                or self._kill_latched or self._disarm_abort):  # NEW (2026-09-10)
             return
         msg = PositionTarget()
         msg.header.stamp     = self.get_clock().now().to_msg()
@@ -280,6 +391,8 @@ class HoldPositionNode(Node):
         self._set_sp(self._hold_x, self._hold_y, self._hold_z, self._hold_yaw)
         self.get_logger().info("[HOLD] Streaming setpoints at hold point (~2s warmup)...")
         time.sleep(2.0)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
 
         # 5. Switch to OFFBOARD
         self.get_logger().info("[HOLD] Switching to OFFBOARD mode...")
@@ -289,8 +402,12 @@ class HoldPositionNode(Node):
 
         t0 = time.time()
         while rclpy.ok() and self._mode != "OFFBOARD" and time.time() - t0 < 5.0:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
             self._set_mode("OFFBOARD")
             time.sleep(0.3)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
 
         if self._mode != "OFFBOARD":
             self.get_logger().error(
@@ -308,6 +425,10 @@ class HoldPositionNode(Node):
         # 6. Hold loop
         t_hold = time.time()
         while rclpy.ok() and time.time() - t_hold < self._hold_time:
+            if self._kill_latched:  # NEW (2026-09-10)
+                return self._kill_abort()
+            if self._disarm_abort:  # NEW (2026-09-10)
+                return self._disarm_stop()
             if self._rc_override:
                 return self._rc_override_abort()
 
@@ -326,6 +447,10 @@ class HoldPositionNode(Node):
 
             time.sleep(0.1)
 
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
+        if self._disarm_abort:  # NEW (2026-09-10)
+            return self._disarm_stop()
         if self._rc_override:
             return self._rc_override_abort()
 
@@ -333,6 +458,10 @@ class HoldPositionNode(Node):
         self.get_logger().info("[HOLD] Starting descent...")
         target_z = self._land_handoff
         self._descent(self._hold_z, target_z)
+        if self._kill_latched:  # NEW (2026-09-10)
+            return self._kill_abort()
+        if self._disarm_abort:  # NEW (2026-09-10)
+            return self._disarm_stop()
         if self._rc_override:
             return self._rc_override_abort()
 
@@ -347,6 +476,8 @@ class HoldPositionNode(Node):
             self._set_mode("AUTO.LAND")
             t0 = time.time()
             while rclpy.ok() and self._armed and time.time() - t0 < 25.0:
+                if self._kill_latched:  # NEW (2026-09-10)
+                    return self._kill_abort()
                 time.sleep(0.3)
             if self._armed:
                 self.get_logger().warn("[HOLD] Land detector slow — forcing disarm.")
@@ -364,6 +495,8 @@ class HoldPositionNode(Node):
         step = self._descent_speed * dt
         z    = from_z
         while rclpy.ok() and z > target_z:
+            if self._kill_latched or self._disarm_abort:  # NEW (2026-09-10)
+                return
             if self._rc_override:
                 return
             if not self._armed:

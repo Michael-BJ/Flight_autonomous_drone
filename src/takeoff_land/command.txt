@@ -1,40 +1,7 @@
-========================================================================
-  TAKEOFF / HOVER / LAND — Quick Start Guide
-  Platform: Jetson Orin Nano | PX4 via MAVROS | ROS2 Humble
-========================================================================
 
-PREREQUISITES
--------------
-- PX4 must have a valid LOCAL POSITION (GPS fix required).
-- RC transmitter ON with kill-switch ready at all times.
-- COM_RC_OVERRIDE=2 set in QGroundControl (enables RC takeover in OFFBOARD).
-- Serial port access: sudo usermod -aG dialout $USER  (then re-login)
 
-------------------------------------------------------------------------
-STEP 1 — Source workspace  (every new terminal)
-------------------------------------------------------------------------
-
-    source /opt/ros/humble/setup.bash
-    source ~/drone_ws/install/setup.bash
-
-------------------------------------------------------------------------
-STEP 2 — Build package
-------------------------------------------------------------------------
-
-    cd ~/drone_ws
-    colcon build --packages-select takeoff_land
-    source install/setup.bash
-
-------------------------------------------------------------------------
-STEP 3 — Launch (USB connection default)
-------------------------------------------------------------------------
-
-    ros2 launch takeoff_land takeoff_land.launch.py \
-        fcu_url:=/dev/ttyACM0:57600
-
-    # Jetson UART:
-    ros2 launch takeoff_land takeoff_land.launch.py \
-        fcu_url:=/dev/ttyTHS1:921600
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
 
     # With custom flight parameters:
     ros2 launch takeoff_land takeoff_land.launch.py \

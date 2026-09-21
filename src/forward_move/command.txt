@@ -1,0 +1,59 @@
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+    # Default: takeoff 1.2 m, hover 8 s, forward 2.0 m at 0.3 m/s,
+    # hold 3 s, land at the end point
+    ros2 launch forward_move forward_move.launch.py
+
+    # With custom forward leg:
+    ros2 launch forward_move forward_move.launch.py \
+        forward_distance:=2.0  \
+        forward_speed:=0.3     \
+        forward_hold_time:=3.0 \
+        target_alt:=1.2
+
+------------------------------------------------------------------------
+PARAMETERS
+------------------------------------------------------------------------
+
+  FORWARD (new in this package)
+    forward_distance  float 2.0  Metres straight ahead (max 10). "Ahead" = the
+                                 heading the nose points at when the mission
+                                 starts (locked with home). Yaw stays fixed.
+    forward_speed     float 0.3  Setpoint speed along the line, m/s (0.05-1.0)
+    forward_hold_time float 3.0  Seconds to hold at the end point before landing
+
+  Everything else (target_alt, hover_time, descent_speed, land_handoff_alt,
+  max_pos_error, max_vz, max_alt_error, require_gps, max_ground_z, ...) is
+  takeoff_land's parameter with the same name and default — see
+  ~/drone_ws/src/takeoff_land/command.txt.
+
+  max_pos_error meaning per phase:
+    TAKEOFF / HOVER   distance from home (launch point)
+    FORWARD           distance from the moving setpoint (tracking error)
+    HOLD / LANDING    distance from the end point
+
+------------------------------------------------------------------------
+FSM SEQUENCE
+------------------------------------------------------------------------
+
+  PREFLIGHT / READY / ARMING / TAKEOFF / HOVER   = takeoff_land, unchanged
+  FORWARD  -> XY setpoint slides home -> end point at forward_speed,
+              z = takeoff_z, yaw fixed. Sanity: tracking err + vz + alt err.
+              Skipped if the takeoff climb never became stable.
+           -> HOLD forward_hold_time at the end point
+  LANDING  -> takeoff_land's controlled descent + AUTO.LAND, at the end point
+  DONE
+
+  Kill switch / unexpected disarm / RC override / link loss / sanity abort:
+  exactly takeoff_land's handlers, in every phase including FORWARD.
+
+------------------------------------------------------------------------
+WARNING
+------------------------------------------------------------------------
+
+  NO OBSTACLE AVOIDANCE. The depth camera is not used. Point the nose at a
+  clear path of at least forward_distance + 2 m before launching.
+
+========================================================================

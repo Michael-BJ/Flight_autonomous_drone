@@ -1,0 +1,87 @@
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+ros2 launch vfh_avoidance_barometer vfh_all_barometer.launch.py \
+    goal_dist:=3.0 forward_speed:=0.3 target_alt:=2.0 \
+    forward_hold_time:=3.0 \
+    max_pos_error:=1.0 max_vz:=1.0 max_alt_error:=0.5
+
+
+------------------------------------------------------------------------
+vfh_avoidance_barometer — VFH obstacle avoidance + barometric altitude
+------------------------------------------------------------------------
+  Takeoff -> hover -> fly to a goal `goal_dist` m straight ahead while VFH
+  (Vector Field Histogram, Orbbec Gemini 2 depth camera) steers around
+  obstacles -> hold -> land WHERE THE DRONE ENDS UP.
+  z from the BAROMETER (takeoff_land_barometer loop), x/y from GPS/EKF.
+  PX4 parameters are NOT changed.
+
+  1) BENCH — perception only (nothing arms, no MAVROS):
+    ros2 launch vfh_avoidance_barometer vfh_perception.launch.py
+    ros2 topic echo /vfh/movement_direction        # state / steer_deg / front_min_m
+    ros2 run rqt_image_view rqt_image_view /vfh/visual   (needs a display)
+    Walk in front of the camera: obstacle left -> steer_deg > 0 (turn right);
+    obstacle right -> steer_deg < 0; nothing -> state move, steer 0;
+    wall across the whole view -> state stop.
+
+  2) DRY RUN on the ground (propellers OFF, no arming):
+    ros2 launch vfh_avoidance_barometer vfh_all_barometer.launch.py \
+        dry_run_check:=true          # <- not a real argument, see below
+    (there is no dry_run flag: use verify_rc_override_param:=false
+     require_rc_offboard:=false with NO battery, the node then stops at
+     "Arming failed" after the READY banner; the VFH stream check and the
+     ground reference are exercised)
+
+  3) FLIGHT (first time: short goal, slow, wide margins, PROPS CLEAR):
+    ros2 launch vfh_avoidance_barometer vfh_all_barometer.launch.py \
+        goal_dist:=3.0 forward_speed:=0.3 target_alt:=2.0 \
+        forward_hold_time:=3.0 \
+        max_pos_error:=1.0 max_vz:=1.0 max_alt_error:=0.5
+
+------------------------------------------------------------------------
+PARAMETERS (see launch_common.py for the full list / descriptions)
+------------------------------------------------------------------------
+  goal_dist (3.0)       m ahead of the launch point, along the nose heading
+  goal_tol (0.5)        m; drone within this -> goal reached -> hold -> land
+  forward_speed (0.3)   m/s cruise; forward_hold_time (3.0) s at the end
+  stop_dist (1.2)       m; closest depth within +-12 deg < this -> XY frozen
+  yaw_rate_max_deg (30) deg/s yaw slew toward the VFH heading
+  max_lead (0.6)        m; setpoint may lead the drone by this (<= max_pos_error)
+  blocked_timeout_s (15)  no progress toward the goal for 15 s -> land here
+  goal_fov_half_deg (80)  goal almost beside/behind the nose -> turn to it first (XY frozen)
+  vfh_stale_abort_s (5)   no VFH message for 5 s -> land here
+  mission_timeout_s (120) -> land here
+  geofence_margin (2.0)   > goal_dist + 2 m from launch -> AUTO.LAND
+  VFH: n_sectors 36, threshold 0.45, d_max 5000 mm, d_min 300 mm,
+       min_valley_width 3 (30 deg), robot_radius 346 mm, safety_dist 500 mm,
+       hfov 91 deg (replaced by camera_info)
+  baro_* / ekf_gate_std / max_ground_z (1000) / max_ground_drift (0.5)
+      -> takeoff_land_barometer's, same meaning
+  everything else -> takeoff_land's / forward_move's, same name and default
+
+------------------------------------------------------------------------
+LIMITS — READ BEFORE FLYING
+------------------------------------------------------------------------
+  * The camera looks FORWARD only. VFH is 2-D: it sees the band the camera
+    sees (rows 15-85 %), nothing above/below, nothing to the side or behind.
+    The sky above the cruise altitude must be clear (branches, wires).
+  * Fly target_alt >= 2.0 m: below that the ground enters the lower rows
+    within d_max (5 m) and can look like an obstacle everywhere (-> stop).
+  * Outdoors in sunlight the Gemini 2 may return 0-4 % valid pixels
+    (2026-09-14 flights). Invalid pixels are "far" -> VFH sees NOTHING and
+    the drone flies straight. Check /realsense/depth/stats valid% first.
+  * The histogram is normalised to its own maximum: one far pole is
+    treated as a full obstacle in its sector (VFH avoids early) — that is
+    the original algorithm's behaviour.
+  * Pilot: mode switch on OFFBOARD, thumb on the Kill switch (SwF).
+    Kill / RC override / link loss / unexpected disarm -> the inherited
+    terminal handlers of takeoff_land (2026-09-10 rules).
+
+------------------------------------------------------------------------
+OFFLINE TESTS (no hardware, no MAVROS, nothing arms) — /usr/bin/python3
+------------------------------------------------------------------------
+  cd ~/drone_ws/src/vfh_avoidance_barometer/test
+  /usr/bin/python3 offline_test_vfh_core.py      # == user's original VFH, direction signs
+  /usr/bin/python3 offline_test_guidance.py      # flight-node steering / target signs
+  ./offline_run_all_missions.sh                  # fake PX4 + synthetic depth world

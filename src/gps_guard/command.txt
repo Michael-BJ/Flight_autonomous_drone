@@ -1,0 +1,222 @@
+========================================================================
+gps_guard — GPS PRE-FLIGHT / STABILITY CHECKER
+========================================================================
+
+Berdiri sendiri, TIDAK menerbangkan apa pun dan TIDAK memerintah drone.
+Node ini hanya membaca telemetry dari px4_sensor_reader lalu menerbitkan
+satu vonis go/no-go di /px4/gps_ready.
+
+Dibuat setelah insiden 2026-08-27 (drone arm dengan fix_type=0, 0 satelit,
+HDOP 99.99 lalu drift ke pohon). Lihat src/INCIDENT_2026-08-27_gps_ekf.md.
+
+
+------------------------------------------------------------------------
+BUILD  (wajib — paket ini baru, belum pernah di-build)
+------------------------------------------------------------------------
+
+    cd ~/drone_ws
+    colcon build --packages-select gps_guard --symlink-install
+    source ~/drone_ws/install/setup.bash
+
+
+------------------------------------------------------------------------
+SOURCE  (setiap terminal baru)
+------------------------------------------------------------------------
+
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+
+------------------------------------------------------------------------
+CARA 1 — SATU TERMINAL  (paling gampang, dipakai untuk cek lapangan)
+------------------------------------------------------------------------
+
+Membawa MAVROS + px4_sensor_reader + gps_check_node sekaligus.
+
+    # Default (USB):
+    ros2 launch gps_guard gps_guard_all.launch.py
+
+    # Sebut FCU-nya eksplisit:
+    ros2 launch gps_guard gps_guard_all.launch.py \
+        fcu_url:=/dev/ttyACM0:57600
+
+    # Jetson UART:
+    ros2 launch gps_guard gps_guard_all.launch.py \
+        fcu_url:=/dev/ttyTHS1:921600
+
+    # Kriteria diperketat:
+    ros2 launch gps_guard gps_guard_all.launch.py \
+        fcu_url:=/dev/ttyACM0:57600 \
+        min_satellites:=10   \
+        max_hdop:=1.5        \
+        max_pos_drift:=0.20  \
+        stable_dur:=10.0
+
+URUTAN START (dari mavros_only.launch.py + gps_guard_all.launch.py):
+    t=0    : kill proses basi + start MAVROS
+    t=10s  : start px4_sensor_reader
+    t=13s  : start gps_check_node
+
+PERINGATAN: JANGAN jalankan bersamaan dengan takeoff_land.launch.py.
+Keduanya membawa MAVROS + reader sendiri -> subscriber ganda.
+
+
+------------------------------------------------------------------------
+CARA 2 — NUMPANG SESI YANG SUDAH JALAN  (dua terminal)
+------------------------------------------------------------------------
+
+Kalau px4_sensor_reader SUDAH jalan (dari takeoff_land.launch.py atau
+fm_deploy), jangan pakai gps_guard_all — pakai ini, tidak menyalakan
+MAVROS kedua.
+
+    # Terminal 1: sudah jalan, misalnya
+    ros2 launch takeoff_land takeoff_land.launch.py fcu_url:=/dev/ttyACM0:57600
+
+    # Terminal 2: checker saja
+    ros2 launch gps_guard gps_guard.launch.py
+
+    # Dengan parameter:
+    ros2 launch gps_guard gps_guard.launch.py \
+        min_satellites:=10 \
+        max_hdop:=1.5
+
+
+------------------------------------------------------------------------
+CARA 3 — NODE TELANJANG  (untuk parameter yang tidak ada di launch file)
+------------------------------------------------------------------------
+
+    ros2 run gps_guard gps_check_node
+
+    ros2 run gps_guard gps_check_node --ros-args \
+        -p min_satellites:=10 \
+        -p max_hdop:=1.5 \
+        -p status_period_s:=2.0 \
+        -p sample_hz:=10.0
+
+Butuh px4_sensor_reader sudah jalan. sample_hz dan status_period_s HANYA
+bisa lewat cara ini — dua launch file di atas tidak mengekspornya.
+
+
+------------------------------------------------------------------------
+PARAMETERS
+------------------------------------------------------------------------
+
+  QUALITY  (snapshot GPS saat ini; nilai kosong/unknown = DIANGGAP BURUK)
+    min_fix_type     int    3     Fix minimum. 3 = 3D fix (enum GPSRAW)
+    min_satellites   int    8     Jumlah satelit minimum
+    max_hdop         float  2.0   HDOP maksimum
+    require_h_acc    bool   false Ikut cek akurasi horizontal?
+    max_h_acc        float  5.0   Batas h_acc (m), hanya jika require_h_acc
+
+  STABILITY  (dinilai atas jendela bergerak selebar window_s)
+    stable_dur       float  5.0   Lama (s) semua kriteria harus bertahan
+    window_s         float  5.0   Lebar jendela untuk hitung ayunan
+    max_sat_swing    int    4     Ayunan jumlah satelit (peak-to-peak)
+    max_hdop_swing   float  0.8   Ayunan HDOP (peak-to-peak)
+    max_pos_drift    float  0.30  Gerak x/y (m) SAAT MASIH DI TANAH.
+                                  Dilewati kalau sudah ARMED — di udara
+                                  drone memang bergerak.
+
+  TIMING  (node-only, lihat CARA 3)
+    sample_hz        float  10.0  Laju sampling, samakan dengan reader
+    status_period_s  float  1.0   Periode baris [GPSCHK] di terminal
+
+  Khusus gps_guard_all.launch.py:
+    fcu_url          str    /dev/ttyACM0:57600
+
+
+------------------------------------------------------------------------
+SYARAT LULUS
+------------------------------------------------------------------------
+
+QUALITY dan STABILITY harus TERPENUHI BERSAMAAN dan BERTAHAN TERUS
+selama stable_dur detik. Satu detik saja gagal, hitungan diulang dari nol.
+
+Ini disengaja: receiver yang masih mencari sinyal itu berkedip-kedip, dan
+satu sampel yang kebetulan bagus adalah cara GPS marginal lolos dari gate.
+
+Cek yang TIDAK dimiliki gate bawaan takeoff_land: max_pos_drift — apakah
+estimasi posisi benar-benar DIAM saat drone diam di tanah. Persis inilah
+kegagalan 2026-08-27.
+
+
+------------------------------------------------------------------------
+OUTPUT
+------------------------------------------------------------------------
+
+Banner saat start:
+
+    ==============================================================
+    [GPSCHK] gps_check_node ready. Need fix>=3 (3D), sats>=8, HDOP<=2.0
+    [GPSCHK] Stability: held 5s, sat swing<=4, HDOP swing<=0.8,
+             ground x/y drift<=0.30m over 5s
+    ==============================================================
+
+Baris status 1 Hz:
+
+    [GPSCHK] NOT READY  fix=NO FIX  sats=0   HDOP=99.99  gnd_drift=?      (fix_type=NO FIX (need >= 3 = 3D fix))
+    [GPSCHK] NOT READY  fix=3D fix  sats=6   HDOP=1.42   gnd_drift=0.11m  (only 6 satellites (need >= 8))
+    [GPSCHK] NOT READY  fix=3D fix  sats=13  HDOP=0.81   gnd_drift=0.09m  (good, holding 2.3/5s)
+    [GPSCHK] GPS READY — quality good and stable.
+    [GPSCHK] READY      fix=3D fix  sats=14  HDOP=0.79   gnd_drift=0.06m  (OK)
+
+Vonis gagal yang paling penting diperhatikan:
+
+    [GPSCHK] GPS NOT READY: position estimate wandering 0.62m while ON THE
+             GROUND (need <= 0.30m) — this is the 2026-08-27 failure
+
+Kalau sempat READY lalu memburuk, level log naik jadi ERROR:
+
+    [GPSCHK] GPS degraded after being ready. This node does NOT command
+             the vehicle — pilot/monitor must decide.
+
+
+------------------------------------------------------------------------
+TOPIK YANG DITERBITKAN
+------------------------------------------------------------------------
+
+    /px4/gps_ready   std_msgs/Bool     latched (TRANSIENT_LOCAL)
+                                       true hanya saat bagus DAN stabil
+    /px4/gps_check   std_msgs/String   JSON lengkap: ready, reason, held,
+                                       sat_swing, hdop_swing, pos_drift_m
+
+Latched artinya node yang baru join tetap dapat nilai terakhir tanpa
+menunggu publish berikutnya.
+
+
+------------------------------------------------------------------------
+MONITORING  (terminal terpisah)
+------------------------------------------------------------------------
+
+    # Vonis go/no-go saja:
+    ros2 topic echo /px4/gps_ready
+
+    # Detail lengkap + alasan:
+    ros2 topic echo /px4/gps_check
+
+    # Sumber datanya (blok gps_quality ada di sini):
+    ros2 topic echo /px4/sensors
+
+    # Cek node hidup:
+    ros2 node list | grep gps_check
+
+
+------------------------------------------------------------------------
+CATATAN
+------------------------------------------------------------------------
+
+  - Node ini TIDAK memblokir takeoff_land. takeoff_land punya gate GPS
+    sendiri di dalam (require_gps:=true). gps_guard adalah pendapat KEDUA
+    yang independen.
+
+  - Untuk membuat node terbang menolak ARM berdasarkan vonis ini,
+    subscribe /px4/gps_ready (Bool, latched) dan tahan sampai True.
+
+  - Node terus jalan setelah takeoff. Kalau GPS memburuk di udara,
+    /px4/gps_ready turun ke False dan muncul ERROR — tapi node ini tidak
+    mengambil tindakan apa pun. Keputusan ada di pilot.
+
+  - Ctrl-C untuk berhenti:
+    [GPSCHK] Stopped by user (Ctrl-C).
+
+========================================================================

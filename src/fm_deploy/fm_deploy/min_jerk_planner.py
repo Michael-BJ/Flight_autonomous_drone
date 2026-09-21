@@ -32,9 +32,17 @@ References:
 """
 
 import math
+import time
 
 import numpy as np
 import scipy.optimize as opt
+
+
+class PlanTimeout(RuntimeError):
+    """NEW (2026-09-14): raised from get_cost/get_grad once self.deadline
+    (time.monotonic) has passed, so a single replan can no longer spend tens
+    of seconds retrying (12:22 flight: 55 s = 16 candidate/target combos x
+    5 perturbed retries, ~3.6 s each, while the map was blocked)."""
 
 
 # ── Default config ────────────────────────────────────────────────────────────
@@ -200,10 +208,22 @@ class TrajUtils:
         t_samples  = np.arange(0, total_time, 1.0 / hz)
         N          = len(t_samples)
         state_cmd  = np.zeros((N, 3, self.D))
-        for k, t in enumerate(t_samples):
-            state_cmd[k, 0] = self.get_pos(t)
-            state_cmd[k, 1] = self.get_vel(t)
-            state_cmd[k, 2] = self.get_acc(t)
+        # NEW (2026-09-14): vectorised version of the old per-sample
+        # get_pos/get_vel/get_acc loop (same piece lookup as _locate_piece:
+        # piece i = number of piece end times [first M-1] that are < t).
+        ends  = np.cumsum(self.ts)
+        t     = np.minimum(t_samples, total_time)
+        idx   = np.searchsorted(ends[:self.M - 1], t, side='left')
+        start = np.concatenate([[0.0], ends[:-1]])[idx]
+        T     = t - start
+        one, zero = np.ones_like(T), np.zeros_like(T)
+        b_pos = np.stack([one, T, T**2, T**3, T**4, T**5], axis=1)
+        b_vel = np.stack([zero, one, 2*T, 3*T**2, 4*T**3, 5*T**4], axis=1)
+        b_acc = np.stack([zero, zero, 2*one, 6*T, 12*T**2, 20*T**3], axis=1)
+        C = self.coeffs.reshape(self.M, 2 * self.s, self.D)[idx]
+        state_cmd[:, 0] = np.einsum('kcd,kc->kd', C, b_pos)
+        state_cmd[:, 1] = np.einsum('kcd,kc->kd', C, b_vel)
+        state_cmd[:, 2] = np.einsum('kcd,kc->kd', C, b_acc)
         return state_cmd
 
     def get_pos_array(self) -> np.ndarray:
@@ -269,6 +289,9 @@ class MinJerkPlanner(TrajUtils):
         self.head_state  = None
         self.tail_state  = None
         self.map         = None
+        # NEW (2026-09-14): absolute time.monotonic() limit, None = unlimited
+        # (the default, so the expert / simulation behave exactly as before).
+        self.deadline    = None
 
     def _precompute_beta(self):
         """
@@ -363,6 +386,46 @@ class MinJerkPlanner(TrajUtils):
     def add_time_grad_CT(self):
         self.grad_T += self.weights[1] * np.ones(self.M)
 
+    # NEW (2026-09-14): the per-sample Python loops below were replaced by
+    # array math over ALL samples of ALL pieces at once, plus ONE batched ESDF
+    # query (esdf_ros2.ESDF.get_edt_batch). Same formulas, same sample set
+    # (j = 0 .. int(T_i/delta_t)-1 per piece, omg = 0.5 at both ends), so cost
+    # and gradient match the loop version to floating-point round-off
+    # (checked offline: rel diff <= 1e-12, identical optimiser result).
+    # Original loops: min_jerk_planner.py.bak-OPTFAST-20260914-144028.
+
+    def _check_deadline(self):
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise PlanTimeout("replan time budget exceeded")
+
+    def _sample_states(self):
+        """(piece, j, omg, sample_num, pos, vel, acc) for every sample."""
+        sn = (self.ts / self.delta_t).astype(int)            # int() per piece
+        piece = np.repeat(np.arange(self.M), sn)
+        j = np.concatenate([np.arange(n) for n in sn]) if sn.sum() else \
+            np.zeros(0, dtype=int)
+        n_of = sn[piece]
+        omg = np.where((j == 0) | (j == n_of - 1), 0.5, 1.0)
+        C = self.coeffs.reshape(self.M, 2 * self.s, self.D)[piece]  # (K,6,D)
+        B = self.beta_full[j]                                       # (K,4,6)
+        pos = np.einsum('kcd,kc->kd', C, B[:, 0])
+        vel = np.einsum('kcd,kc->kd', C, B[:, 1])
+        acc = np.einsum('kcd,kc->kd', C, B[:, 2])
+        return piece, j, omg, n_of, pos, vel, acc, B
+
+    def _edt_batch(self, pts):
+        """Distance + gradient for (K,2) points. Falls back to the scalar API
+        for map objects without get_edt_batch (e.g. offline test fakes)."""
+        if not np.all(np.isfinite(pts)):
+            # the loop version died in int() on NaN -> the attempt failed
+            raise ValueError("non-finite trajectory sample")
+        if hasattr(self.map, "get_edt_batch"):
+            return self.map.get_edt_batch(pts)
+        dis = np.array([float(self.map.get_edt_dis(p)) for p in pts])
+        grad = np.array([self.map.get_edt_grad(p) for p in pts],
+                        dtype=float).reshape(-1, 2)
+        return dis, grad
+
     def add_sampled_cost(self):
         """
         Feasibility + collision cost via dense sampling.
@@ -371,90 +434,78 @@ class MinJerkPlanner(TrajUtils):
           - Check whether the velocity exceeds v_max
           - Check whether the position is too close to an obstacle (via ESDF)
         """
-        for i in range(self.M):
-            c          = self.coeffs[2*self.s*i : 2*self.s*(i+1), :]
-            sample_num = int(self.ts[i] / self.delta_t)
+        self._check_deadline()
+        _, _, omg, _, pos, vel, _, _ = self._sample_states()
+        if omg.size == 0:
+            return
+        dt = self.delta_t
 
-            for j in range(sample_num):
-                beta = self.beta_full[j]
-                pos  = c.T @ beta[0]   # (D,)
-                vel  = c.T @ beta[1]   # (D,)
-                omg  = 0.5 if j in (0, sample_num - 1) else 1.0
+        # Feasibility: penalty if |vel| > v_max
+        vv = np.einsum('kd,kd->k', vel, vel) - self.v_max ** 2
+        m = vv > 0.0
+        self.costs[2] += float(np.sum(omg[m] * dt * vv[m] ** 3))
 
-                # Feasibility: penalty if |vel| > v_max
-                violate_vel = float(vel @ vel) - self.v_max ** 2
-                if violate_vel > 0.0:
-                    self.costs[2] += omg * self.delta_t * violate_vel ** 3
-
-                # Collision: two-tier potential (see PlannerConfig.hard_dis)
-                pos_2d   = pos[:2]
-                edt_dis  = self.map.get_edt_dis(pos_2d)
-                # Soft tier: comfort margin, may be entered (cubic, gentle)
-                violate  = self.safe_dis - edt_dis
-                if violate > 0.0:
-                    self.costs[3] += omg * self.delta_t * violate ** 3
-                # Hard tier: drone-body barrier (quadratic + large weight)
-                violate_h = self.hard_dis - edt_dis
-                if violate_h > 0.0:
-                    self.costs[3] += (
-                        self.w_hard_rel * omg * self.delta_t * violate_h ** 2)
+        # Collision: two-tier potential (see PlannerConfig.hard_dis)
+        edt_dis, _ = self._edt_batch(pos[:, :2])
+        violate = self.safe_dis - edt_dis        # soft tier (cubic, gentle)
+        ms = violate > 0.0
+        violate_h = self.hard_dis - edt_dis      # hard tier (quadratic)
+        mh = violate_h > 0.0
+        self.costs[3] += float(np.sum(omg[ms] * dt * violate[ms] ** 3))
+        self.costs[3] += float(np.sum(
+            self.w_hard_rel * omg[mh] * dt * violate_h[mh] ** 2))
 
     def add_sampled_grad_CT(self):
-        for i in range(self.M):
-            c          = self.coeffs[2*self.s*i : 2*self.s*(i+1), :]
-            sample_num = int(self.ts[i] / self.delta_t)
+        self._check_deadline()
+        piece, j, omg, n_of, pos, vel, acc, B = self._sample_states()
+        if omg.size == 0:
+            return
+        dt = self.delta_t
+        w2, w3 = self.weights[2], self.weights[3]
+        K = omg.size
+        coef_b1 = np.zeros((K, self.D))   # multiplies beta[1] (feasibility)
+        coef_b0 = np.zeros((K, self.D))   # multiplies beta[0] (collision)
+        gT = np.zeros(K)
 
-            for j in range(sample_num):
-                beta = self.beta_full[j]
-                pos  = c.T @ beta[0]
-                vel  = c.T @ beta[1]
-                omg  = 0.5 if j in (0, sample_num - 1) else 1.0
+        # Feasibility gradient
+        vv = np.einsum('kd,kd->k', vel, vel) - self.v_max ** 2
+        m = vv > 0.0
+        if np.any(m):
+            gKv = 3.0 * dt * omg[m] * vv[m] ** 2
+            grad_v2t = 2.0 * np.einsum('kd,kd->k', acc[m], vel[m])
+            coef_b1[m] += (w2 * gKv)[:, None] * 2.0 * vel[m]
+            gT[m] += w2 * (omg[m] * vv[m] ** 3 / n_of[m]
+                           + gKv * grad_v2t * j[m] / n_of[m])
 
-                # Feasibility gradient
-                violate_vel = float(vel @ vel) - self.v_max ** 2
-                if violate_vel > 0.0:
-                    grad_v2c = 2.0 * np.outer(beta[1], vel)
-                    grad_v2t = 2.0 * float(beta[2] @ c @ vel)
-                    gKv      = 3.0 * self.delta_t * omg * violate_vel ** 2
+        # Collision gradient (two-tier potential)
+        edt_dis, edt_grad = self._edt_batch(pos[:, :2])
+        violate = self.safe_dis - edt_dis
+        violate_h = self.hard_dis - edt_dis
+        ms = violate > 0.0
+        mh = violate_h > 0.0
+        if np.any(ms | mh):
+            g = np.zeros((K, self.D))
+            g[:, :2] = edt_grad
+            grad_p2t = -np.einsum('kd,kd->k', edt_grad, vel[:, :2])
+            if np.any(ms):   # soft tier (cubic)
+                gKp = 3.0 * dt * omg[ms] * violate[ms] ** 2
+                coef_b0[ms] -= (w3 * gKp)[:, None] * g[ms]
+                gT[ms] += w3 * (omg[ms] * violate[ms] ** 3 / n_of[ms]
+                                + gKp * grad_p2t[ms] * j[ms] / n_of[ms])
+            if np.any(mh):   # hard tier (quadratic + large weight)
+                gKh = self.w_hard_rel * 2.0 * dt * omg[mh] * violate_h[mh]
+                coef_b0[mh] -= (w3 * gKh)[:, None] * g[mh]
+                gT[mh] += w3 * (
+                    self.w_hard_rel * omg[mh] * violate_h[mh] ** 2 / n_of[mh]
+                    + gKh * grad_p2t[mh] * j[mh] / n_of[mh])
 
-                    self.grad_C[2*self.s*i : 2*self.s*(i+1), :] += (
-                        self.weights[2] * gKv * grad_v2c)
-                    self.grad_T[i] += self.weights[2] * (
-                        omg * violate_vel**3 / sample_num
-                        + gKv * grad_v2t * j / sample_num)
-
-                # Collision gradient (two-tier potential)
-                pos_2d  = pos[:2]
-                edt_dis = self.map.get_edt_dis(pos_2d)
-                violate   = self.safe_dis - edt_dis
-                violate_h = self.hard_dis - edt_dis
-                if violate > 0.0 or violate_h > 0.0:
-                    edt_grad = self.map.get_edt_grad(pos_2d)   # [gx, gy]
-
-                    # position grad to C grad (shared by both tiers)
-                    edt_g_2d = np.zeros(self.D)
-                    edt_g_2d[:2] = edt_grad
-                    grad_p2c = -np.outer(beta[0], edt_g_2d)
-                    grad_p2t = float(-np.array(edt_grad) @ vel[:2])
-
-                    # Soft tier (cubic)
-                    if violate > 0.0:
-                        gKp = 3.0 * self.delta_t * omg * violate ** 2
-                        self.grad_C[2*self.s*i : 2*self.s*(i+1), :] += (
-                            self.weights[3] * gKp * grad_p2c)
-                        self.grad_T[i] += self.weights[3] * (
-                            omg * violate**3 / sample_num
-                            + gKp * grad_p2t * j / sample_num)
-
-                    # Hard tier (quadratic + large weight)
-                    if violate_h > 0.0:
-                        gKh = (self.w_hard_rel * 2.0
-                               * self.delta_t * omg * violate_h)
-                        self.grad_C[2*self.s*i : 2*self.s*(i+1), :] += (
-                            self.weights[3] * gKh * grad_p2c)
-                        self.grad_T[i] += self.weights[3] * (
-                            self.w_hard_rel * omg * violate_h**2 / sample_num
-                            + gKh * grad_p2t * j / sample_num)
+        # scatter the per-sample outer products into the per-piece blocks
+        contrib = (np.einsum('kc,kd->kcd', B[:, 1], coef_b1)
+                   + np.einsum('kc,kd->kcd', B[:, 0], coef_b0))
+        GC = np.zeros((self.M, 2 * self.s, self.D))
+        np.add.at(GC, piece, contrib)
+        self.grad_C += GC.reshape(self.grad_C.shape)
+        self.grad_T += np.bincount(piece, weights=gT, minlength=self.M)
 
     # ── Propagate gradient to Q and tau ───────────────────────────────────
 
@@ -694,6 +745,8 @@ class MinJerkPlanner(TrajUtils):
             try:
                 self.plan_once()
                 return
+            except PlanTimeout:
+                raise   # NEW (2026-09-14): out of time -> no more retries
             except Exception as e:
                 if seed < 4:
                     new_wpts, new_ts = self.generate_init_variables(

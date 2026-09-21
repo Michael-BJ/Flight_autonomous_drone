@@ -1,0 +1,127 @@
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+    # Same flight as takeoff_land, but the ALTITUDE comes from the BAROMETER
+    # (x/y still GPS). PX4 parameters are NOT changed.
+    ros2 launch takeoff_land_barometer takeoff_land_barometer.launch.py \
+        target_alt:=2.0        \
+        hover_time:=8.0        \
+        descent_speed:=0.3     \
+        max_pos_error:=0.5     \
+        max_vz:=1.0            \
+        max_alt_error:=0.5
+
+------------------------------------------------------------------------
+WHAT IS DIFFERENT FROM takeoff_land (everything else is identical)
+------------------------------------------------------------------------
+
+  The node is takeoff_land's TakeoffLandNode + a barometric altitude layer
+  (takeoff_land_barometer/baro_altitude.py). Every setpoint z is sent as
+
+      z_sp = z_ekf + baro_gain * (alt_target - alt_baro)
+
+  so PX4 sees the BAROMETRIC altitude error, not the GPS-height error.
+  Slow GPS-height drift and GPS z jumps no longer move the drone.
+  Below baro_ground_effect_alt (1.0 m) the barometer is not used
+  (propeller downwash): the first/last metre dead-reckon on the EKF z
+  like takeoff_land does.
+
+  PRE-FLIGHT ground reference (replaces the EKF-only check):
+    barometer (filtered): rate >= 5 Hz, std < 0.08 m, spread <= 0.30 m
+    EKF z:                std < ekf_gate_std (0.15 m), spread <= 0.5 m
+                          (|z| check effectively OFF: max_ground_z 1000)
+  Terminal shows  balt=<barometric alt>(BARO|EKF-LOCK|STALE)  ekf_alt=...
+
+  ABORTS added: barometer stream lost > baro_stale_abort_s (5 s) -> AUTO.LAND.
+  max_alt_error is measured on the barometric altitude.
+
+------------------------------------------------------------------------
+PARAMETERS (new; the rest are takeoff_land's — see takeoff_land/command.txt)
+------------------------------------------------------------------------
+
+  baro_gain               0.7   loop gain (1.0 = PX4's own MPC_Z_P response)
+  baro_tau_s              1.0   low-pass on the raw barometer (0.085 m RMS noise
+                                at 10 Hz measured 2026-09-13 -> ~3 cm)
+  baro_ground_effect_alt  1.0   below this: EKF dead-reckoning, no barometer
+  baro_blend_s            2.0   blend when switching to the barometer
+  baro_glitch_m           1.5   single-sample outlier rejection
+  baro_stale_s            1.0   no sample -> EKF fallback
+  baro_stale_abort_s      5.0   no sample -> abort (0 = never)
+  baro_max_cmd_offset     1.5   |z_sp - z_ekf| bound
+  baro_gate_std           0.08  pre-flight, filtered barometer std
+  baro_gate_drift         0.30  pre-flight, filtered barometer peak-to-peak
+  baro_min_rate_hz        5.0   pre-flight, /mavros/altitude rate
+  ekf_gate_std            0.15  pre-flight, EKF z std (takeoff_land: 0.08)
+  max_ground_z            1000  (takeoff_land: 1.0)
+  max_ground_drift        0.5   (takeoff_land: 0.2)
+
+------------------------------------------------------------------------
+FIRST TEST (propellers OFF, then a low hover)
+------------------------------------------------------------------------
+
+  1. Pixhawk powered >= 3 min before the ground reference (barometer warm-up).
+  2. Propellers OFF: launch, read "Ground reference OK. baro h_ground=... |
+     EKF ground_z=... | offset ekf-baro=..." and the balt= line (should sit
+     near 0.00 m EKF-LOCK). Kill-switch test as documented for takeoff_land.
+  3. target_alt:=1.5 hover: watch balt= (barometric) against what you see,
+     and ekf_alt= drifting away from it — that drift is what used to move
+     the drone.
+
+------------------------------------------------------------------------
+OPSIONAL: PX4 JUGA MEMAKAI BAROMETER (EKF2_HGT_REF 0 + EKF2_GPS_CTRL 5)
+------------------------------------------------------------------------
+
+  Package ini bekerja TANPA mengubah parameter PX4. Tetapi PX4 sendiri masih
+  memegang tinggi GPS di EKF-nya (EKF2_HGT_REF 1, EKF2_GPS_CTRL 7), jadi
+  jitter cepat GPS masih masuk lewat kecepatan vertikal EKF, dan gate
+  pra-terbang tetap menolak kalau EKF z bergoyang cepat.
+
+  Lebih kuat: pindahkan referensi tinggi EKF ke barometer dan matikan tinggi
+  GPS. Teruji 2026-09-13 13:07 dan 13:15 (statis 90 s: EKF z 0.42 m p2p vs
+  GPS 1.7-2.7 m). Dikembalikan ke GPS pada 13:4x atas permintaan pemilik.
+  Package barometer tetap kompatibel: EKF z lalu ~ barometer, offset ~ tetap.
+
+    EKF2_HGT_REF   1 (GPS)  -> 0 (Baro)   referensi tinggi EKF
+    EKF2_GPS_CTRL  7        -> 5          bit1 (tinggi GPS) OFF; posisi
+                                          horizontal (bit0) + kecepatan 3D
+                                          (bit2) tetap ON.  Keduanya WAJIB:
+                                          HGT_REF 0 saja tidak cukup (13:00,
+                                          z masih ikut GPS, corr +0.99).
+
+  Syarat: drone DISARMED, baling-baling lepas, MAVROS sudah tersambung
+  (ros2 launch takeoff_land mavros_only.launch.py). Ini menulis ke flash
+  Pixhawk dan berlaku untuk SEMUA mode terbang, termasuk Position mode pilot.
+
+  Cara 1 - lewat MAVROS (terminal kedua, setelah source):
+    ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
+    ros2 param set /mavros/param EKF2_HGT_REF 0
+    ros2 param set /mavros/param EKF2_GPS_CTRL 5
+    # baca ulang dari flight controller untuk memastikan:
+    ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
+    ros2 param get /mavros/param EKF2_HGT_REF      # harus 0
+    ros2 param get /mavros/param EKF2_GPS_CTRL     # harus 5
+  Cara 2 - QGroundControl > Vehicle Setup > Parameters, cari EKF2_HGT_REF
+    dan EKF2_GPS_CTRL, ubah, lalu Tools > Reboot Vehicle.
+
+  Setelah menulis: CABUT BATERAI + USB, nyalakan lagi Pixhawk (EKF init bersih),
+  tunggu >= 3 menit (barometer warm-up: -3.5 m dalam 2 menit pertama), baru
+  jalankan package ini. Catat: EKF z di tanah tidak akan 0 (13:15: -3.4 m),
+  itu normal untuk package ini (max_ground_z sudah 1000).
+  Rekam parameter sebelum/sesudah di CLAUDE.md dan knowledge base.
+
+  Efek pada program: tidak ada yang perlu diubah. balt= dan ekf_alt= akan
+  hampir sama; offset ekf-baro hampir konstan.
+  Catatan risiko: barometer hanyut dengan cuaca dan angin/matahari langsung
+  (tutup Pixhawk dengan busa), dan efek tanah (EKF2_GND_EFF_DZ 4.0,
+  EKF2_GND_MAX_HGT 0.5 sudah menangani <= 0.5 m).
+
+  KEMBALIKAN KE GPS (setelah GPS diganti, atau kalau ragu):
+    ros2 param set /mavros/param EKF2_HGT_REF 1
+    ros2 param set /mavros/param EKF2_GPS_CTRL 7
+    ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
+    ros2 param get /mavros/param EKF2_HGT_REF      # harus 1
+    ros2 param get /mavros/param EKF2_GPS_CTRL     # harus 7
+    lalu cabut baterai + USB dan nyalakan lagi Pixhawk.
+  JANGAN pakai write_px4_params:=true di fm_deploy* (kelas induk simulasi
+  akan menulis EKF2_HGT_REF 1 kembali).

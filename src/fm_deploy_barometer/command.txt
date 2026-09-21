@@ -1,0 +1,219 @@
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+ros2 launch fm_deploy_barometer fm_all_barometer.launch.py \
+    goal_dist:=9.0 target_alt:=1.8 v_max:=0.3 \
+    replan_period:=2.0 planning_time_ahead:=0.3 w_feasibility:=1000.0 \
+    max_alt_error:=0.7 baro_gain:=0.0 \
+    use_lookahead_guard:=false use_speed_limit:=false \
+    blind_abort_s:=0 stuck_abort_s:=0 max_plan_cost:=1000 gate_enabled:=false \
+    min_battery_pct:=20 mission_timeout_s:=120 \
+    dry_run:=false
+
+
+
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+# fm_deploy with (1) BAROMETRIC altitude hold and (2) RETURN-along-the-flown-
+# path recovery. Planner, model and fm_deploy's own code are unchanged.
+# PX4 parameters are NOT changed. dry_run defaults to true.
+ros2 launch fm_deploy_barometer fm_all_barometer.launch.py \
+    goal_dist:=2.0 target_alt:=2.0 max_alt_error:=0.5 \
+    dry_run:=false
+
+# Recovery only, altitude from the EKF/GPS exactly like fm_deploy:
+ros2 launch fm_deploy_barometer fm_all_barometer.launch.py use_baro:=false ...
+
+------------------------------------------------------------------------
+(1) ALTITUDE  — see takeoff_land_barometer/command.txt for the parameters
+------------------------------------------------------------------------
+  z_sp = z_ekf + baro_gain * (target_alt - alt_baro)   every setpoint,
+  including the planner's and the escape setpoints. Takeoff "reached
+  altitude", the in-flight altitude watchdog (max_alt_error) and the
+  landing hand-off use the barometric altitude. A lost barometer stream
+  (> baro_stale_abort_s) aborts (land in place).
+  Defaults that differ from fm_all.launch.py: target_alt 2.0 (was 1.5),
+  max_ground_z 1000 (1.0), max_ground_drift 0.5 (0.2), gate_alt_margin
+  1.5 (0.5), plus band_drift_margin 0.5 (octomap band widened upward).
+  Fly at target_alt >= 2.0 m: the octomap band lives in the drifting EKF
+  frame and only tolerates ~(target_alt - 0.7) m of drift before ground
+  returns enter it (then the planner just refuses to move — STUCK).
+
+------------------------------------------------------------------------
+(2) RECOVERY  — fm_deploy_barometer/recovery.py
+------------------------------------------------------------------------
+  What used to happen: any abort -> land where the drone is (2026-09-13
+  15:05: OFF-MAP abort 10 s after entering FLYING).
+
+  Now, when the mission stops:
+    recoverable   drone off-map / STUCK / mission timeout
+                  -> RETURN: retrace the breadcrumb trail (recorded every
+                     rth_crumb_spacing m during FLYING) backwards to home
+                     at rth_speed, nose along the path, then land at home
+    vehicle       GEOFENCE / ALTITUDE / BATTERY / DISARM / barometer lost
+                  -> land in place (unchanged)
+    pilot         RC override / link loss / kill switch
+                  -> setpoints stop at once (unchanged)
+    goal reached  -> land at the goal (unchanged)
+    < rth_min_dist (1 m) from home, or no trail -> land in place
+
+  During RETURN every step is guarded; any failure -> land in place:
+    known obstacle within rth_min_clearance (0.5 m, ESDF incl. virtual
+    arena walls) of the drone or of the carrot -> hold; > rth_block_s (8 s)
+    drone > rth_max_track_err (1.5 m) behind the carrot for 3 s
+    time budget 2x path length / rth_speed + rth_timeout_extra_s
+    geofence radius, battery, disarm (as before); kill/RC/link (as before)
+
+  Terminal:  >>> RETURN  banner, then "[RTH] 2.4/6.1 m | home 3.7 m |
+  lead 0.31 m | clear 1.20 m" every 2 s, then LANDING at home.
+
+  rth_enabled:=false restores fm_deploy's land-in-place behaviour.
+
+------------------------------------------------------------------------
+FIRST TESTS
+------------------------------------------------------------------------
+  1. dry_run:=true (default): expect "Ground reference OK", "Octomap band
+     [...] +0.5 m drift margin", "Replan ok". No arming.
+  2. dry_run:=false goal_dist:=0.0 target_alt:=2.0: takeoff/hover/land on
+     the barometer only.
+  3. goal_dist:=3.0 in the open. To exercise RETURN safely: goal_dist:=4.0
+     mission_timeout_s:=40 — the timeout is a recoverable stop, so the
+     drone must fly back along its trail and land at home.
+
+------------------------------------------------------------------------
+OPSIONAL: PX4 JUGA MEMAKAI BAROMETER (EKF2_HGT_REF 0 + EKF2_GPS_CTRL 5)
+------------------------------------------------------------------------
+
+  Package ini bekerja TANPA mengubah parameter PX4. Tetapi PX4 sendiri masih
+  memegang tinggi GPS di EKF-nya (EKF2_HGT_REF 1, EKF2_GPS_CTRL 7), jadi
+  jitter cepat GPS masih masuk lewat kecepatan vertikal EKF, dan gate
+  pra-terbang tetap menolak kalau EKF z bergoyang cepat.
+
+  Lebih kuat: pindahkan referensi tinggi EKF ke barometer dan matikan tinggi
+  GPS. Teruji 2026-09-13 13:07 dan 13:15 (statis 90 s: EKF z 0.42 m p2p vs
+  GPS 1.7-2.7 m). Dikembalikan ke GPS pada 13:4x atas permintaan pemilik.
+  Package barometer tetap kompatibel: EKF z lalu ~ barometer, offset ~ tetap.
+
+    EKF2_HGT_REF   1 (GPS)  -> 0 (Baro)   referensi tinggi EKF
+    EKF2_GPS_CTRL  7        -> 5          bit1 (tinggi GPS) OFF; posisi
+                                          horizontal (bit0) + kecepatan 3D
+                                          (bit2) tetap ON.  Keduanya WAJIB:
+                                          HGT_REF 0 saja tidak cukup (13:00,
+                                          z masih ikut GPS, corr +0.99).
+
+  Syarat: drone DISARMED, baling-baling lepas, MAVROS sudah tersambung
+  (ros2 launch takeoff_land mavros_only.launch.py). Ini menulis ke flash
+  Pixhawk dan berlaku untuk SEMUA mode terbang, termasuk Position mode pilot.
+
+  Cara 1 - lewat MAVROS (terminal kedua, setelah source):
+    ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
+    ros2 param set /mavros/param EKF2_HGT_REF 0
+    ros2 param set /mavros/param EKF2_GPS_CTRL 5
+    # baca ulang dari flight controller untuk memastikan:
+    ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
+    ros2 param get /mavros/param EKF2_HGT_REF      # harus 0
+    ros2 param get /mavros/param EKF2_GPS_CTRL     # harus 5
+  Cara 2 - QGroundControl > Vehicle Setup > Parameters, cari EKF2_HGT_REF
+    dan EKF2_GPS_CTRL, ubah, lalu Tools > Reboot Vehicle.
+
+  Setelah menulis: CABUT BATERAI + USB, nyalakan lagi Pixhawk (EKF init bersih),
+  tunggu >= 3 menit (barometer warm-up: -3.5 m dalam 2 menit pertama), baru
+  jalankan package ini. Catat: EKF z di tanah tidak akan 0 (13:15: -3.4 m),
+  itu normal untuk package ini (max_ground_z sudah 1000).
+  Rekam parameter sebelum/sesudah di CLAUDE.md dan knowledge base.
+
+  Efek pada program: tidak ada yang perlu diubah. balt= dan ekf_alt= akan
+  hampir sama; offset ekf-baro hampir konstan.
+  Catatan risiko: barometer hanyut dengan cuaca dan angin/matahari langsung
+  (tutup Pixhawk dengan busa), dan efek tanah (EKF2_GND_EFF_DZ 4.0,
+  EKF2_GND_MAX_HGT 0.5 sudah menangani <= 0.5 m).
+
+  KEMBALIKAN KE GPS (setelah GPS diganti, atau kalau ragu):
+    ros2 param set /mavros/param EKF2_HGT_REF 1
+    ros2 param set /mavros/param EKF2_GPS_CTRL 7
+    ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
+    ros2 param get /mavros/param EKF2_HGT_REF      # harus 1
+    ros2 param get /mavros/param EKF2_GPS_CTRL     # harus 7
+    lalu cabut baterai + USB dan nyalakan lagi Pixhawk.
+  JANGAN pakai write_px4_params:=true di fm_deploy* (kelas induk simulasi
+  akan menulis EKF2_HGT_REF 1 kembali).
+
+# ============================================================
+# Simpan octomap untuk debugging (2026-09-16, RTHYAWMAP)
+# ============================================================
+# Tambahkan ke perintah launch:
+#     record_map:=true publish_3d_map:=true
+# Rosbag ditulis ke ~/flight_maps/map_<tanggal>_<jam>/ (ubah dengan
+# map_record_dir:=/path/lain). Isinya /projected_map (peta 2D yang dipakai
+# planner), /octomap_binary + /octomap_full (peta 3D, hanya kalau
+# publish_3d_map:=true), pose, odom, dan TF.
+#
+# Perekam hanya mendengarkan: tidak menerbitkan topik apa pun dan tidak
+# menyentuh /dev/ttyACM0.
+#
+# Menyimpan file .bt/.ot (SAAT launch masih jalan, terminal lain):
+#     ros2 run octomap_server octomap_saver_node -f ~/flight_maps/peta.bt
+#
+# Memutar ulang bag setelah terbang:
+#     ros2 bag play ~/flight_maps/map_<tanggal>_<jam>
+#     (di terminal lain) rviz2   -> tambah display Map (/projected_map)
+#                                   atau OccupancyGrid (/octomap_full)
+
+# ============================================================
+# Lihat peta lewat SSH: peta ASCII di terminal (2026-09-21, MAPVIEW)
+# ============================================================
+# Menggambar /projected_map — peta 2D yang BENAR-BENAR dipakai planner
+# (esdf_ros2.py membaca topik yang sama) — sebagai peta teks. Tidak perlu
+# GUI, X11 forwarding, atau port forwarding: cukup SSH biasa.
+#
+# Node ini hanya MENDENGAR: tidak menerbitkan topik, tidak memanggil
+# service, tidak pernah membuka /dev/ttyACM0. Mematikannya tidak
+# mempengaruhi penerbangan yang sedang berjalan.
+#
+# --- Cara 1: ikut di launch penerbangan (satu terminal) ---
+#     ros2 launch fm_deploy_barometer fm_all_barometer.launch.py \
+#         goal_dist:=5.0 target_alt:=2.0 view_map:=true
+#
+#   Peta muncul ~0.5 Hz, tercetak sebagai blok baru (mode scroll) supaya
+#   TIDAK merusak log misi yang berbagi terminal yang sama.
+#   Penanda G memakai goal_dist/goal_lat yang sama dengan misi.
+#
+#   Argumen: view_map (false) | view_hz (0.5) | view_rows (18)
+#            view_cols (90)   | view_range (0.0 = seluruh peta, >0 =
+#            jendela +/- N meter mengikuti drone) | view_mode (scroll)
+#
+#   Peta terasa kasar? Naikkan view_rows (skala dibatasi jumlah baris,
+#   karena sel karakter kira-kira 2x lebih tinggi daripada lebar):
+#       view_rows:=30 view_cols:=120
+#
+# --- Cara 2: terminal SSH kedua, layar penuh (peta lebih besar/halus) ---
+#   Terminal 1: launch penerbangan seperti biasa (tanpa view_map).
+#   Terminal 2:
+#     conda deactivate
+#     source /opt/ros/humble/setup.bash
+#     source ~/drone_ws/install/setup.bash
+#     ros2 run fm_deploy_barometer octomap_view_node --ros-args \
+#         -p view_mode:=fullscreen -p view_hz:=2.0 \
+#         -p goal_dist:=5.0 -p view_rows:=0 -p view_cols:=0
+#   (view_rows/view_cols 0 = ikut ukuran terminal; Ctrl-C untuk keluar)
+#
+# --- Membaca petanya ---
+#   Atas layar = utara (+y), kanan = timur (+x) — sumbu ENU yang sama
+#   dengan ESDF dan marker RViz.
+#     #  sel terisi (halangan)        .  sel bebas (sudah terlihat)
+#     ' ' belum terlihat (unknown)    o  jejak yang sudah dilewati
+#     H  titik home (dikunci saat arm)   G  goal
+#     -> panah = drone + arah hidungnya (8 arah)
+#   Baris status: mode, ARMED, posisi, z, yaw, baterai; lalu ukuran peta,
+#   umur data peta (age), cakupan tampilan, dan skala meter per kolom.
+#
+#   Peta kosong / semua spasi = octomap belum dapat data. Di luar ruangan
+#   depth Gemini 2 sering hanya 0-4% piksel valid, jadi ini normal di
+#   lapangan terbuka. Peringatan "[drone outside view]" = drone di luar
+#   area yang sedang digambar (pakai view_range untuk jendela mengikuti).
+#
+# --- Tes offline (tanpa MAVROS, tanpa arming) ---
+#     /usr/bin/python3 ~/drone_ws/src/fm_deploy_barometer/test/offline_test_mapview.py

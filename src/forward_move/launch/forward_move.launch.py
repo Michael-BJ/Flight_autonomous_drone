@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""
+forward_move.launch.py
+======================
+All-in-one: MAVROS (serial) + px4_sensor_reader (from takeoff_land)
++ forward_move_node.
+TAKE OFF -> HOVER -> FORWARD -> HOLD -> LANDING at the end point, via
+OFFBOARD on real hardware.
+
+Every takeoff_land argument below has the SAME name and default as in
+takeoff_land.launch.py; only the forward_* arguments are new.
+
+USAGE:
+    ros2 launch forward_move forward_move.launch.py
+    ros2 launch forward_move forward_move.launch.py \
+        forward_distance:=2.0 forward_speed:=0.3 target_alt:=1.2
+
+PARAMS (takeoff_land): fcu_url, target_alt, hover_time, cmd_hz, descent_speed,
+        auto_land_mode, land_handoff_alt, rc_override_enabled,
+        verify_rc_override_param, require_rc_offboard,
+        max_pos_error, max_vz, max_alt_error,
+        require_gps, min_fix_type, min_satellites, max_hdop, gps_wait_timeout,
+        gps_stable_dur, max_ground_z, ekf_window_s, max_ground_drift,
+        status_period_s, color_output
+PARAMS (new):  forward_distance, forward_speed, forward_hold_time
+
+START ORDER (with delays):
+    t=0   : kill stale processes + start MAVROS
+    t=10s : start px4_sensor_reader
+    t=14s : start forward_move_node (begins handshake after telemetry flows)
+"""
+import os
+import subprocess
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, TimerAction
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+_MAVROS_CFG = "/opt/ros/humble/share/mavros/launch/px4_config.yaml"
+_LOCAL_PLG  = "/opt/ros/humble/share/mavros/launch/px4_pluginlists.yaml"
+
+
+def _kill_stale(context):
+    import time, glob
+    try:
+        subprocess.run(["pkill", "-9", "-f", "mavros_node"], capture_output=True)
+        subprocess.run(["pkill", "-9", "-f", "px4_sensor_reader"], capture_output=True)
+        # Both flight nodes: two setpoint streams must never run at once.
+        subprocess.run(["pkill", "-9", "-f", "takeoff_land_node"], capture_output=True)
+        subprocess.run(["pkill", "-9", "-f", "forward_move_node"], capture_output=True)
+    except Exception:
+        pass
+    time.sleep(2.0)
+    for shm in glob.glob("/dev/shm/fastrtps_*"):
+        try:
+            os.remove(shm)
+        except Exception:
+            pass
+    subprocess.run(["ros2", "daemon", "stop"], capture_output=True)
+    time.sleep(1.0)
+    subprocess.run(["ros2", "daemon", "start"], capture_output=True)
+    time.sleep(1.0)
+    return []
+
+
+def generate_launch_description():
+    # ── takeoff_land arguments (same names and defaults) ────────────────────
+    arg_fcu_url   = DeclareLaunchArgument(
+        "fcu_url", default_value="/dev/ttyACM0:57600",
+        description="FCU URL — USB: /dev/ttyACM0:57600 | Jetson UART: /dev/ttyTHS1:921600")
+    arg_alt       = DeclareLaunchArgument("target_alt",     default_value="1.2")
+    arg_hover     = DeclareLaunchArgument("hover_time",     default_value="8.0")
+    arg_cmd_hz    = DeclareLaunchArgument("cmd_hz",         default_value="50")
+    arg_descent   = DeclareLaunchArgument("descent_speed",  default_value="0.3")
+    arg_auto_land = DeclareLaunchArgument("auto_land_mode", default_value="true")
+    arg_handoff   = DeclareLaunchArgument("land_handoff_alt",    default_value="0.25")
+    arg_rc_ovr    = DeclareLaunchArgument("rc_override_enabled", default_value="true")
+    arg_verify_rc = DeclareLaunchArgument(
+        "verify_rc_override_param", default_value="true",
+        description="Pre-flight check of PX4 COM_RC_OVERRIDE. Set false only "
+                     "for bench tests without a battery/RC bound.")
+    arg_rc_offb   = DeclareLaunchArgument(
+        "require_rc_offboard", default_value="true",
+        description="Refuse to ARM unless the RC mode switch is already "
+                    "in the OFFBOARD slot. Set false only for bench "
+                    "tests with no RC bound.")
+    arg_max_pos   = DeclareLaunchArgument(
+        "max_pos_error",  default_value="2.0",
+        description="Max horizontal error (m): from home during TAKEOFF/HOVER, "
+                    "from the moving setpoint during FORWARD, from the end "
+                    "point during HOLD/LANDING.")
+    arg_max_vz    = DeclareLaunchArgument("max_vz",         default_value="3.0")
+    arg_max_alt   = DeclareLaunchArgument("max_alt_error",  default_value="1.5")
+    arg_req_gps   = DeclareLaunchArgument(
+        "require_gps", default_value="true",
+        description="Refuse to ARM until GPS is genuinely usable. Set false "
+                    "ONLY for indoor flight where a healthy VIO/optical-flow "
+                    "source provides PX4's local position.")
+    arg_min_fix   = DeclareLaunchArgument("min_fix_type",     default_value="3")
+    arg_min_sats  = DeclareLaunchArgument("min_satellites",   default_value="8")
+    arg_max_hdop  = DeclareLaunchArgument("max_hdop",         default_value="2.0")
+    arg_gps_to    = DeclareLaunchArgument("gps_wait_timeout", default_value="120.0")
+    arg_gps_dur   = DeclareLaunchArgument("gps_stable_dur",   default_value="5.0")
+    # NEW (2026-09-14): default 1.0 -> 1000.0 (user request). z = 0 is the EKF
+    # origin at Pixhawk power-on, not the ground; std/drift gates stay active.
+    arg_max_gnd_z = DeclareLaunchArgument(
+        "max_ground_z", default_value="1000.0",
+        description="Max |local-frame z| accepted while ON THE GROUND. A "
+                    "steady but far-from-zero z means the estimate is broken, "
+                    "not stable (2026-08-27: 5.46 m accepted, drone hit a tree).")
+    arg_ekf_win   = DeclareLaunchArgument("ekf_window_s",     default_value="5.0")
+    arg_gnd_drift = DeclareLaunchArgument("max_ground_drift", default_value="0.20")
+    arg_status_p  = DeclareLaunchArgument(
+        "status_period_s", default_value="2.0",
+        description="How often the [T+mm:ss] PHASE status line is printed.")
+    arg_color     = DeclareLaunchArgument(
+        "color_output", default_value="true",
+        description="ANSI colour. Set false when piping the log to a file.")
+    # ── forward leg (new) ────────────────────────────────────────────────────
+    arg_fwd_dist  = DeclareLaunchArgument(
+        "forward_distance", default_value="2.0",
+        description="Metres to fly straight ahead along the heading the nose "
+                    "points at when the mission starts (max 10). NO obstacle "
+                    "avoidance — the path must be clear.")
+    arg_fwd_speed = DeclareLaunchArgument(
+        "forward_speed", default_value="0.3",
+        description="Forward setpoint speed in m/s (0.05-1.0).")
+    arg_fwd_hold  = DeclareLaunchArgument(
+        "forward_hold_time", default_value="3.0",
+        description="Seconds to hold at the end point before landing there.")
+
+    fcu_url       = LaunchConfiguration("fcu_url")
+    target_alt    = LaunchConfiguration("target_alt")
+    hover_time    = LaunchConfiguration("hover_time")
+    cmd_hz        = LaunchConfiguration("cmd_hz")
+    descent_speed = LaunchConfiguration("descent_speed")
+    auto_land     = LaunchConfiguration("auto_land_mode")
+    land_handoff  = LaunchConfiguration("land_handoff_alt")
+    rc_override   = LaunchConfiguration("rc_override_enabled")
+    verify_rc     = LaunchConfiguration("verify_rc_override_param")
+    rc_offb       = LaunchConfiguration("require_rc_offboard")
+    max_pos_error = LaunchConfiguration("max_pos_error")
+    max_vz        = LaunchConfiguration("max_vz")
+    max_alt_error = LaunchConfiguration("max_alt_error")
+    require_gps   = LaunchConfiguration("require_gps")
+    min_fix_type  = LaunchConfiguration("min_fix_type")
+    min_sats      = LaunchConfiguration("min_satellites")
+    max_hdop      = LaunchConfiguration("max_hdop")
+    gps_wait_to   = LaunchConfiguration("gps_wait_timeout")
+    gps_stable    = LaunchConfiguration("gps_stable_dur")
+    max_ground_z  = LaunchConfiguration("max_ground_z")
+    ekf_window_s  = LaunchConfiguration("ekf_window_s")
+    max_gnd_drift = LaunchConfiguration("max_ground_drift")
+    status_period = LaunchConfiguration("status_period_s")
+    color_output  = LaunchConfiguration("color_output")
+    fwd_dist      = LaunchConfiguration("forward_distance")
+    fwd_speed     = LaunchConfiguration("forward_speed")
+    fwd_hold      = LaunchConfiguration("forward_hold_time")
+
+    kill_old = OpaqueFunction(function=_kill_stale)
+
+    mavros_node = Node(
+        package="mavros",
+        executable="mavros_node",
+        namespace="mavros",
+        output="screen",
+        parameters=[
+            {"fcu_url":             fcu_url},
+            {"gcs_url":             ""},
+            {"target_system_id":    1},
+            {"target_component_id": 1},
+            {"fcu_protocol":        "v2.0"},
+            _MAVROS_CFG,
+            _LOCAL_PLG,
+        ],
+    )
+
+    reader = TimerAction(
+        period=10.0,
+        actions=[
+            Node(
+                package="takeoff_land",
+                executable="px4_sensor_reader",
+                name="px4_sensor_reader",
+                output="screen",
+                parameters=[{"fcu_url": fcu_url, "auto_launch_mavros": False}],
+            ),
+        ],
+    )
+
+    forward_node = TimerAction(
+        period=14.0,
+        actions=[
+            Node(
+                package="forward_move",
+                executable="forward_move_node",
+                name="forward_move_node",
+                output="screen",
+                parameters=[{
+                    "target_alt":          ParameterValue(target_alt,    value_type=float),
+                    "hover_time":          ParameterValue(hover_time,    value_type=float),
+                    "cmd_hz":              ParameterValue(cmd_hz,        value_type=int),
+                    "descent_speed":       ParameterValue(descent_speed, value_type=float),
+                    "auto_land_mode":      ParameterValue(auto_land,     value_type=bool),
+                    "land_handoff_alt":    ParameterValue(land_handoff,  value_type=float),
+                    "rc_override_enabled": ParameterValue(rc_override,   value_type=bool),
+                    "verify_rc_override_param": ParameterValue(verify_rc, value_type=bool),
+                    "require_rc_offboard": ParameterValue(rc_offb,  value_type=bool),
+                    "max_pos_error":       ParameterValue(max_pos_error, value_type=float),
+                    "max_vz":              ParameterValue(max_vz,        value_type=float),
+                    "max_alt_error":       ParameterValue(max_alt_error, value_type=float),
+                    "require_gps":         ParameterValue(require_gps,  value_type=bool),
+                    "min_fix_type":        ParameterValue(min_fix_type, value_type=int),
+                    "min_satellites":      ParameterValue(min_sats,     value_type=int),
+                    "max_hdop":            ParameterValue(max_hdop,     value_type=float),
+                    "gps_wait_timeout":    ParameterValue(gps_wait_to,  value_type=float),
+                    "gps_stable_dur":      ParameterValue(gps_stable,   value_type=float),
+                    "max_ground_z":        ParameterValue(max_ground_z, value_type=float),
+                    "ekf_window_s":        ParameterValue(ekf_window_s, value_type=float),
+                    "max_ground_drift":    ParameterValue(max_gnd_drift, value_type=float),
+                    "status_period_s":     ParameterValue(status_period, value_type=float),
+                    "color_output":        ParameterValue(color_output,  value_type=bool),
+                    "use_ekf_stable":      True,
+                    "forward_distance":    ParameterValue(fwd_dist,      value_type=float),
+                    "forward_speed":       ParameterValue(fwd_speed,     value_type=float),
+                    "forward_hold_time":   ParameterValue(fwd_hold,      value_type=float),
+                }],
+            ),
+        ],
+    )
+
+    return LaunchDescription([
+        arg_fcu_url, arg_alt, arg_hover, arg_cmd_hz, arg_descent, arg_auto_land,
+        arg_handoff, arg_rc_ovr, arg_verify_rc, arg_rc_offb,
+        arg_max_pos, arg_max_vz, arg_max_alt,
+        arg_req_gps, arg_min_fix, arg_min_sats, arg_max_hdop, arg_gps_to, arg_gps_dur,
+        arg_max_gnd_z, arg_ekf_win, arg_gnd_drift, arg_status_p, arg_color,
+        arg_fwd_dist, arg_fwd_speed, arg_fwd_hold,
+        kill_old, mavros_node, reader, forward_node,
+    ])

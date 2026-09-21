@@ -47,8 +47,13 @@ from launch_ros.parameter_descriptions import ParameterValue
 # skips the GPU attempt and goes straight to CPUExecutionProvider, same
 # end result. Override model_path:=...pth on the command line once the
 # GPU is fixed and you want to re-test it.
+#
+# NEW (2026-09-13): default is now the TensorRT engine (GPU), checked against
+# ..._trt.onnx at load time with automatic fallback to that .onnx on CPU.
+# Previous default, still valid:
+#   model_path:=~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx
 _DEFAULT_MODEL_PATH = os.path.expanduser(
-    "~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx")
+    "~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037_trt_fp32.engine")
 
 
 def _f(name):
@@ -68,8 +73,8 @@ def generate_launch_description():
         # ── Model ────────────────────────────────────────────────────────────
         DeclareLaunchArgument(
             "model_path", default_value=_DEFAULT_MODEL_PATH,
-            description="FM checkpoint path (.onnx recommended on Jetson, or "
-                        ".pth). Defaults to .onnx — see the "
+            description="FM model path (.engine = TensorRT GPU, .onnx or "
+                        ".pth). Defaults to the TensorRT .engine — see the "
                         "_DEFAULT_MODEL_PATH comment above."),
         DeclareLaunchArgument(
             "K", default_value="8",
@@ -105,6 +110,29 @@ def generate_launch_description():
             description="Max speed (m/s). START LOW. Simulation uses 1.0; "
                         "in a real room 0.4-0.6 is much safer."),
         DeclareLaunchArgument("replan_period", default_value="1.0"),
+        # NEW (2026-09-14): replan cost limits (see fm_inference_base.py)
+        DeclareLaunchArgument(
+            "max_candidates", default_value="1",
+            description="Optimise only the N best-ranked FM guesses (0 = all K)."),
+        DeclareLaunchArgument(
+            "replan_budget_s", default_value="1.0",
+            description="Wall-clock limit per replan (s). Over it the replan "
+                        "fails and the old trajectory is kept. 0 = no limit."),
+        # NEW (2026-09-15, WFEAS): 1 = old; 1000 = optimiser keeps |v| <= v_max
+        # itself, so time-scaling no longer divides every new start speed
+        DeclareLaunchArgument(
+            "w_feasibility", default_value="1000.0",
+            description="MINCO speed-feasibility weight (1 = old behaviour)."),
+        # NEW (2026-09-15, YAWSMOOTH): yaw while FLYING
+        DeclareLaunchArgument(
+            "flying_yaw_mode", default_value="home",
+            description="home = nose locked toward goal | smooth = follows "
+                        "the path, rate-limited | velocity = old (swings)"),
+        DeclareLaunchArgument("yaw_smooth_tau_s",   default_value="1.0"),
+        DeclareLaunchArgument("yaw_rate_max_dps",   default_value="30.0"),
+        DeclareLaunchArgument("yaw_min_speed",      default_value="0.15"),
+        DeclareLaunchArgument("yaw_max_offset_deg", default_value="60.0"),
+        DeclareLaunchArgument("yaw_deadband_deg",   default_value="15.0"),
         DeclareLaunchArgument(
             "cmd_hz", default_value="50",
             description="Setpoint rate (Hz). 50 = same as takeoff_land, "
@@ -135,6 +163,11 @@ def generate_launch_description():
                               description="Minimum voltage (V). 0 = disabled. "
                                           "4S LiPo: ~14.4 V is reasonable."),
         DeclareLaunchArgument("min_battery_pct", default_value="0.0"),
+        DeclareLaunchArgument(
+            "require_rc_offboard", default_value="true",
+            description="Refuse to ARM unless the RC mode switch is "
+                        "already in the OFFBOARD slot. Skipped in "
+                        "dry_run."),
         # ── GPS quality pre-arm gate (see _wait_gps_quality in the node) ─────
         DeclareLaunchArgument(
             "require_gps", default_value="true",
@@ -149,8 +182,10 @@ def generate_launch_description():
         DeclareLaunchArgument("gps_wait_timeout", default_value="120.0"),
         DeclareLaunchArgument("gps_stable_dur",   default_value="5.0"),
         # ── EKF ground_z trust criteria (see _wait_ekf_stable in the node) ──
+        # NEW (2026-09-14): default 1.0 -> 1000.0 (user request); std/drift
+        # gates stay active.
         DeclareLaunchArgument(
-            "max_ground_z", default_value="1.0",
+            "max_ground_z", default_value="1000.0",
             description="Max |local-frame z| accepted while ON THE GROUND. A "
                         "steady but far-from-zero z means the estimate is "
                         "broken, not stable (2026-08-27: 5.46 m was accepted "
@@ -387,6 +422,11 @@ def generate_launch_description():
         executable="fm_inference_real_node",
         name="fm_inference_real_node",
         output="screen",
+        # NEW (2026-09-14): single-threaded OpenBLAS. The MINCO optimiser does
+        # thousands of 18x18 solves; multi-threaded OpenBLAS made each one
+        # 0.42 ms instead of 0.017 ms on this Jetson (threads fighting the
+        # camera/octomap/MAVROS for CPU).
+        additional_env={"OPENBLAS_NUM_THREADS": "1"},
         parameters=[{
             "model_path":          LaunchConfiguration("model_path"),
             "K":                   _i("K"),
@@ -399,6 +439,16 @@ def generate_launch_description():
             "target_alt":          _f("target_alt"),
             "v_max":               _f("v_max"),
             "replan_period":       _f("replan_period"),
+            "max_candidates":      _i("max_candidates"),     # NEW (2026-09-14)
+            "replan_budget_s":     _f("replan_budget_s"),    # NEW (2026-09-14)
+            "w_feasibility":       _f("w_feasibility"),      # NEW (2026-09-15, WFEAS)
+            # NEW (2026-09-15, YAWSMOOTH)
+            "flying_yaw_mode":     LaunchConfiguration("flying_yaw_mode"),
+            "yaw_smooth_tau_s":    _f("yaw_smooth_tau_s"),
+            "yaw_rate_max_dps":    _f("yaw_rate_max_dps"),
+            "yaw_min_speed":       _f("yaw_min_speed"),
+            "yaw_max_offset_deg":  _f("yaw_max_offset_deg"),
+            "yaw_deadband_deg":    _f("yaw_deadband_deg"),
             "cmd_hz":              _i("cmd_hz"),
             "auto_reverse":        _b("auto_reverse"),
             "mission_timeout_s":   _f("mission_timeout_s"),
@@ -412,6 +462,7 @@ def generate_launch_description():
             "max_alt_error":       _f("max_alt_error"),
             "min_battery_v":       _f("min_battery_v"),
             "min_battery_pct":     _f("min_battery_pct"),
+            "require_rc_offboard": _b("require_rc_offboard"),
             "require_gps":         _b("require_gps"),
             "min_fix_type":        _i("min_fix_type"),
             "min_satellites":      _i("min_satellites"),

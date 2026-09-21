@@ -214,6 +214,36 @@ class ESDF:
                 return 10000.0
             return float(self.esdf_map[row, col])
 
+    def get_edt_batch(self, pts):
+        """NEW (2026-09-14): get_edt_dis + get_edt_grad for many points in one
+        call (one lock, no per-point Python). Used by the MINCO optimiser.
+
+        Args:
+            pts: (K, 2) world x, y in meters
+        Returns:
+            dis  (K,)   same values as get_edt_dis (10000.0 off-map / no map)
+            grad (K, 2) same values as get_edt_grad ([0, 0] off-map / no map)
+        """
+        pts = np.asarray(pts, dtype=float).reshape(-1, 2)
+        k = pts.shape[0]
+        dis = np.full(k, 10000.0)
+        grad = np.zeros((k, 2))
+        with self._lock:
+            if not self._received or k == 0:
+                return dis, grad
+            # np.trunc == int() (rounds toward zero), as in _world_to_index
+            row = np.trunc((pts[:, 1] - self.map_origin.y)
+                           / self.map_resolution).astype(np.int64)
+            col = np.trunc((pts[:, 0] - self.map_origin.x)
+                           / self.map_resolution).astype(np.int64)
+            inb = ((row >= 0) & (row < self.map_height)
+                   & (col >= 0) & (col < self.map_width))
+            r, c = row[inb], col[inb]
+            dis[inb] = self.esdf_map[r, c]
+            grad[inb, 0] = self.esdf_grad_x[r, c]
+            grad[inb, 1] = self.esdf_grad_y[r, c]
+        return dis, grad
+
     def is_unobserved(self, pos) -> bool:
         """True if (x, y) has NOT been observed yet — either outside the mapped
         grid entirely, or a cell the octomap still marks unknown (-1).

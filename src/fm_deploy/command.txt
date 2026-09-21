@@ -8,5 +8,19 @@ source ~/drone_ws/install/setup.bash
 # so .pth just wastes time on a failed GPU attempt before falling back to
 # the same .onnx anyway. No need to pass model_path unless overriding it.
 ros2 launch fm_deploy fm_all.launch.py \
-    goal_dist:=5.0 target_alt:=1.5 max_alt_error:=0.5 \
-    dry_run:=true
+    goal_dist:=2.0 target_alt:=3 max_alt_error:=0.5 \
+    dry_run:=false
+
+
+
+conda deactivate
+source /opt/ros/humble/setup.bash
+source ~/drone_ws/install/setup.bash
+
+ros2 launch fm_deploy fm_all.launch.py \
+    goal_dist:=2.0 target_alt:=3.0 max_alt_error:=0.5 \
+    v_max:=0.3 descent_speed:=0.3 \
+    max_ground_z:=100.0 \
+    use_lookahead_guard:=false use_safety_guards:=false blind_abort_s:=0 \
+    gate_enabled:=false \
+    dry_run:=false

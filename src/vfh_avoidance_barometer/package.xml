@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vfh_avoidance_barometer</name>
+  <version>0.1.0</version>
+  <description>VFH (Vector Field Histogram) obstacle avoidance from the Orbbec Gemini 2 depth camera, flown on forward_move (takeoff -> VFH-guided leg -> land) with the altitude measured by the barometer instead of the GPS-referenced EKF z. X/Y stay GPS.</description>
+  <maintainer email="michaelbryanjahanto@gmail.com">michael</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>orbbec_camera</exec_depend>
+  <exec_depend>fm_deploy</exec_depend>
+
+  <depend>forward_move</depend>
+  <depend>takeoff_land</depend>
+  <depend>takeoff_land_barometer</depend>
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>mavros_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-opencv</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

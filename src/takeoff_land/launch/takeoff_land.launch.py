@@ -71,6 +71,11 @@ def generate_launch_description():
         "verify_rc_override_param", default_value="true",
         description="Pre-flight check of PX4 COM_RC_OVERRIDE. Set false only "
                      "for bench tests without a battery/RC bound.")
+    arg_rc_offb   = DeclareLaunchArgument(
+        "require_rc_offboard", default_value="true",
+        description="Refuse to ARM unless the RC mode switch is already "
+                    "in the OFFBOARD slot. Set false only for bench "
+                    "tests with no RC bound.")
     arg_max_pos   = DeclareLaunchArgument("max_pos_error",  default_value="2.0")
     arg_max_vz    = DeclareLaunchArgument("max_vz",         default_value="3.0")
     arg_max_alt   = DeclareLaunchArgument("max_alt_error",  default_value="1.5")
@@ -86,8 +91,10 @@ def generate_launch_description():
     arg_gps_to    = DeclareLaunchArgument("gps_wait_timeout", default_value="120.0")
     arg_gps_dur   = DeclareLaunchArgument("gps_stable_dur",   default_value="5.0")
     # ── EKF ground_z trust criteria (see takeoff_land_node._wait_ekf_stable) ──
+    # NEW (2026-09-14): default 1.0 -> 1000.0 (user request). z = 0 is the EKF
+    # origin at Pixhawk power-on, not the ground; std/drift gates stay active.
     arg_max_gnd_z = DeclareLaunchArgument(
-        "max_ground_z", default_value="1.0",
+        "max_ground_z", default_value="1000.0",
         description="Max |local-frame z| accepted while ON THE GROUND. A "
                     "steady but far-from-zero z means the estimate is broken, "
                     "not stable (2026-08-27: 5.46 m accepted, drone hit a tree).")
@@ -110,6 +117,7 @@ def generate_launch_description():
     land_handoff  = LaunchConfiguration("land_handoff_alt")
     rc_override   = LaunchConfiguration("rc_override_enabled")
     verify_rc     = LaunchConfiguration("verify_rc_override_param")
+    rc_offb       = LaunchConfiguration("require_rc_offboard")
     max_pos_error = LaunchConfiguration("max_pos_error")
     max_vz        = LaunchConfiguration("max_vz")
     max_alt_error = LaunchConfiguration("max_alt_error")
@@ -173,6 +181,7 @@ def generate_launch_description():
                     "land_handoff_alt":    ParameterValue(land_handoff,  value_type=float),
                     "rc_override_enabled": ParameterValue(rc_override,   value_type=bool),
                     "verify_rc_override_param": ParameterValue(verify_rc, value_type=bool),
+                    "require_rc_offboard": ParameterValue(rc_offb,  value_type=bool),
                     "max_pos_error":       ParameterValue(max_pos_error, value_type=float),
                     "max_vz":              ParameterValue(max_vz,        value_type=float),
                     "max_alt_error":       ParameterValue(max_alt_error, value_type=float),
@@ -195,7 +204,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         arg_fcu_url, arg_alt, arg_hover, arg_cmd_hz, arg_descent, arg_auto_land,
-        arg_handoff, arg_rc_ovr, arg_verify_rc, arg_max_pos, arg_max_vz, arg_max_alt,
+        arg_handoff, arg_rc_ovr, arg_verify_rc, arg_rc_offb,
+        arg_max_pos, arg_max_vz, arg_max_alt,
         arg_req_gps, arg_min_fix, arg_min_sats, arg_max_hdop, arg_gps_to, arg_gps_dur,
         arg_max_gnd_z, arg_ekf_win, arg_gnd_drift, arg_status_p, arg_color,
         kill_old, mavros_node, reader, takeoff_node,

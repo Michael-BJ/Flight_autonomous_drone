@@ -48,8 +48,14 @@ _ORBBEC_SHARE = get_package_share_directory("orbbec_camera")
 # backend either way (see fm_inference_node.py), so nothing is lost by
 # defaulting here. Override model_path:=...pth on the command line once
 # the GPU is fixed and you want to re-test it.
+#
+# NEW (2026-09-13): default is now the TensorRT engine (runs on the GPU;
+# native TensorRT is not affected by the cuBLAS bug). The node checks it
+# against ..._trt.onnx at load time and falls back to that .onnx on CPU if
+# anything fails. Previous default, still valid:
+#   model_path:=~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx
 _DEFAULT_MODEL_PATH = os.path.expanduser(
-    "~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037.onnx")
+    "~/drone_ws/src/fm_deploy/model/fm/fm_planner_20260724_190037_trt_fp32.engine")
 
 
 def generate_launch_description():
@@ -62,8 +68,9 @@ def generate_launch_description():
         # ── Model ────────────────────────────────────────────────────────────
         DeclareLaunchArgument(
             "model_path", default_value=_DEFAULT_MODEL_PATH,
-            description="FM checkpoint path (.onnx or .pth). Defaults to "
-                        ".onnx — see the _DEFAULT_MODEL_PATH comment above."),
+            description="FM model path (.engine, .onnx or .pth). Defaults to "
+                        "the TensorRT .engine — see the _DEFAULT_MODEL_PATH "
+                        "comment above."),
         DeclareLaunchArgument("K", default_value="8"),
         DeclareLaunchArgument(
             "onnx_fallback_on_oom", default_value="true",
@@ -118,6 +125,17 @@ def generate_launch_description():
         DeclareLaunchArgument("blind_abort_s",      default_value="10.0"),
         DeclareLaunchArgument("stuck_abort_s",      default_value="60.0"),
         DeclareLaunchArgument("depth_max_lag",      default_value="0.5"),
+        # NEW (2026-09-14): replan cost limits, forwarded to fm_real.launch.py
+        DeclareLaunchArgument("max_candidates",     default_value="1"),
+        DeclareLaunchArgument("replan_budget_s",    default_value="1.0"),
+        DeclareLaunchArgument("w_feasibility",      default_value="1000.0"),  # NEW (2026-09-15, WFEAS)
+        # NEW (2026-09-15, YAWSMOOTH): yaw while FLYING, forwarded to fm_real
+        DeclareLaunchArgument("flying_yaw_mode",    default_value="home"),
+        DeclareLaunchArgument("yaw_smooth_tau_s",   default_value="1.0"),
+        DeclareLaunchArgument("yaw_rate_max_dps",   default_value="30.0"),
+        DeclareLaunchArgument("yaw_min_speed",      default_value="0.15"),
+        DeclareLaunchArgument("yaw_max_offset_deg", default_value="60.0"),
+        DeclareLaunchArgument("yaw_deadband_deg",   default_value="15.0"),
         DeclareLaunchArgument(
             "min_battery_pct", default_value="0.0",
             description="0 = battery percentage check DISABLED."),
@@ -163,6 +181,10 @@ def generate_launch_description():
         # 2026-08-27 incident — see _wait_gps_quality() in
         # fm_inference_real_node.py for the full story.
         DeclareLaunchArgument(
+            "require_rc_offboard", default_value="true",
+            description="Refuse to ARM unless the RC mode switch is "
+                        "already in the OFFBOARD slot."),
+        DeclareLaunchArgument(
             "require_gps", default_value="true",
             description="false ONLY for indoor flight with a healthy "
                         "VIO/optical-flow source feeding PX4 local position."),
@@ -171,7 +193,9 @@ def generate_launch_description():
         # Max |local-frame z| accepted while ON THE GROUND. A steady but
         # far-from-zero z means the estimate is broken, not stable — on
         # 2026-08-27 a std-only check accepted 5.46 m for a grounded drone.
-        DeclareLaunchArgument("max_ground_z",   default_value="1.0"),
+        # NEW (2026-09-14): default 1.0 -> 1000.0 (user request); std/drift
+        # gates stay active.
+        DeclareLaunchArgument("max_ground_z",   default_value="1000.0"),
         DeclareLaunchArgument(
             "ekf_pre_wait_s", default_value="10.0",
             description="Initial GPS/EKF convergence delay before the "
@@ -293,6 +317,7 @@ def generate_launch_description():
                     "max_home_dist":     LaunchConfiguration("max_home_dist"),
                     "max_alt_error":     LaunchConfiguration("max_alt_error"),
                     "min_battery_v":     LaunchConfiguration("min_battery_v"),
+                    "require_rc_offboard": LaunchConfiguration("require_rc_offboard"),
                     "require_gps":       LaunchConfiguration("require_gps"),
                     "min_satellites":    LaunchConfiguration("min_satellites"),
                     "max_hdop":          LaunchConfiguration("max_hdop"),
@@ -316,6 +341,16 @@ def generate_launch_description():
                     "blind_abort_s":       LaunchConfiguration("blind_abort_s"),
                     "stuck_abort_s":       LaunchConfiguration("stuck_abort_s"),
                     "depth_max_lag":       LaunchConfiguration("depth_max_lag"),
+                    "max_candidates":      LaunchConfiguration("max_candidates"),   # NEW (2026-09-14)
+                    "replan_budget_s":     LaunchConfiguration("replan_budget_s"),  # NEW (2026-09-14)
+                    "w_feasibility":       LaunchConfiguration("w_feasibility"),  # NEW (2026-09-15, WFEAS)
+                    # NEW (2026-09-15, YAWSMOOTH)
+                    "flying_yaw_mode":     LaunchConfiguration("flying_yaw_mode"),
+                    "yaw_smooth_tau_s":    LaunchConfiguration("yaw_smooth_tau_s"),
+                    "yaw_rate_max_dps":    LaunchConfiguration("yaw_rate_max_dps"),
+                    "yaw_min_speed":       LaunchConfiguration("yaw_min_speed"),
+                    "yaw_max_offset_deg":  LaunchConfiguration("yaw_max_offset_deg"),
+                    "yaw_deadband_deg":    LaunchConfiguration("yaw_deadband_deg"),
                     "min_battery_pct":     LaunchConfiguration("min_battery_pct"),
                     "rc_override_enabled": LaunchConfiguration("rc_override_enabled"),
                     "verify_rc_override_param":

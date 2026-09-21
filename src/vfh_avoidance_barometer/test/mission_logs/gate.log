@@ -1,0 +1,232 @@
+[INFO] [1789397578.231601761] [vfh_avoidance_node]: ==============================================================
+[INFO] [1789397578.248538851] [vfh_avoidance_node]: VFH Obstacle Avoidance Node  [vfh_avoidance_barometer]
+[INFO] [1789397578.249239098] [vfh_avoidance_node]: ==============================================================
+[INFO] [1789397578.249833933] [vfh_avoidance_node]:   Depth          : /realsense/depth/float32 (float32, m -> mm)
+[INFO] [1789397578.250826765] [vfh_avoidance_node]:   Camera         : Orbbec Gemini 2 via gemini2_depth_bridge_node
+[INFO] [1789397578.251436960] [vfh_avoidance_node]:   hfov           : 91.0 deg (updated from camera_info when it arrives)
+[INFO] [1789397578.251990034] [vfh_avoidance_node]:   Drone          : 49cm x 49cm  robot_radius=346 mm  safety_dist=500 mm
+[INFO] [1789397578.252670440] [vfh_avoidance_node]:   n_sectors=36 (10 deg)  threshold=0.45  smooth=2  min_valley_w=3 (= 30 deg)
+[INFO] [1789397578.253377567] [vfh_avoidance_node]:   d_min=300mm  d_max=5000mm  FOV sectors 9/36
+[INFO] [1789397578.253933265] [vfh_avoidance_node]:   ROI rows       : 0.15-0.85 of the image height
+[INFO] [1789397578.254476899] [vfh_avoidance_node]:   Ground filter  : ON (baro AGL from /vfh/agl_m, keep 0.5 m above ground)
+[INFO] [1789397578.255029940] [vfh_avoidance_node]:   Publishing     : /vfh/movement_direction  /vfh/obstacles  /vfh/visual
+[INFO] [1789397578.255566758] [vfh_avoidance_node]: ==============================================================
+[INFO] [1789397578.358442813] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.359226262] [takeoff_land_node]: [T/L] takeoff_land_node ready. target_alt=2.0m  hover=4.0s  cmd_hz=50
+[INFO] [1789397578.360017871] [takeoff_land_node]: [T/L] RC override safety: ENABLED
+[INFO] [1789397578.360587746] [takeoff_land_node]: [T/L] Sanity limits — pos:1.5m  vz:1.0m/s  alt_err:0.6m
+[INFO] [1789397578.361141620] [takeoff_land_node]: [T/L] GPS pre-arm gate: ENABLED — fix>=3D, sats>=8, HDOP<=2.0
+[INFO] [1789397578.361655492] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.363999088] [takeoff_land_node]: [FWD] forward leg: 2.00 m at 0.40 m/s, hold 2.0 s, then land at the end point. NO obstacle avoidance.
+[INFO] [1789397578.393514664] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.394252064] [takeoff_land_node]: [BARO] BAROMETRIC ALTITUDE HOLD: z from /mavros/altitude (monotonic), x/y stay GPS/EKF. gain=0.70 tau=1.0s ground-effect zone <1.0m (EKF dead-reckoning there)
+[INFO] [1789397578.400634734] [takeoff_land_node]: [BARO] PX4 parameters are NOT touched (EKF2_HGT_REF stays as it is). Pilot modes behave exactly as before.
+[INFO] [1789397578.402309924] [takeoff_land_node]: [BARO] ground gate: EKF |z|<=1000m spread<=0.50m std<0.15m | baro std<0.08m spread<=0.30m rate>=5Hz
+[INFO] [1789397578.403984826] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.412982844] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.413825975] [takeoff_land_node]: [VFH] VFH obstacle-avoidance leg: goal 6.0 m ahead (tol 0.5 m) at 0.40 m/s, yaw slew 30 deg/s, hard brake < 1.2 m, blocked > 15 s or no VFH > 5 s -> land here
+[INFO] [1789397578.414488941] [takeoff_land_node]: [VFH] geofence: > 8.0 m from launch -> AUTO.LAND. Camera is front-facing only; VFH is 2-D (no view up/down).
+[INFO] [1789397578.415140898] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.438963426] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.439768764] [takeoff_land_node]:   >>> [1/7] PREFLIGHT   (from PREFLIGHT)   T+00:00
+[INFO] [1789397578.464121870] [takeoff_land_node]:       FCU -> COM_RC_OVERRIDE -> local pose -> GPS gate -> ground_z
+[INFO] [1789397578.465458521] [takeoff_land_node]: ==============================================================
+[INFO] [1789397578.466803076] [takeoff_land_node]: [T/L] Waiting for MAVROS connection (via /px4/state)...
+[WARN] [1789397578.517958359] [vfh_avoidance_node]: [VFH] ground filter INACTIVE: no fresh /vfh/agl_m (flight node not running?). Low-altitude ground may read as an obstacle.
+[INFO] [1789397578.668686389] [takeoff_land_node]: [T/L] FCU connected.
+[INFO] [1789397578.671106436] [takeoff_land_node]: [SAFETY] Syncing PX4 params (param/pull)...
+[INFO] [1789397578.751426819] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=no-agl 211ms
+[INFO] [1789397578.797681623] [takeoff_land_node]: [SAFETY] COM_RC_OVERRIDE=2 — verified OK.
+[INFO] [1789397578.850573953] [takeoff_land_node]: [SAFETY] COM_OBL_RC_ACT=4 (offboard-loss failsafe action — confirm in QGC this maps to Hold/Land/Return for your PX4 version).
+[INFO] [1789397578.863102390] [takeoff_land_node]: [T/L] Waiting for local position (from /px4/sensors)...
+[INFO] [1789397578.864105910] [takeoff_land_node]: [GPS] Pre-arm gate: need fix>=3 (3D), sats>=8, HDOP<=2.00, held for 2s (timeout 30s)...
+[INFO] [1789397578.864875119] [takeoff_land_node]: [GPS] Quality OK (sats=20, HDOP=0.6) — holding 2s to confirm...
+[INFO] [1789397579.145402313] [vfh_avoidance_node]: [VFH] hfov from camera_info: 91.0 deg (fx=314.5, w=640) -> FOV sectors 9/36
+[INFO] [1789397579.169494226] [vfh_avoidance_node]: [VFH] ground filter: agl=0.0m
+[INFO] [1789397580.826484675] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 191ms
+[INFO] [1789397580.914881575] [takeoff_land_node]: [GPS] Pre-arm gate PASSED — fix_type=3, sats=20, HDOP=0.6, h_acc=0.5m
+[INFO] [1789397580.922784198] [takeoff_land_node]: [VFH] VFH stream OK: 4.7 Hz, state=stop hfov=91.0 deg, 191.1 ms/frame, front_min=0.3 m
+[INFO] [1789397580.923578848] [takeoff_land_node]: [BARO] Waiting 10s for GPS/EKF/baro initial convergence...
+[WARN] [1789397581.278376534] [vfh_avoidance_node]: [VFH] ground filter INACTIVE: no fresh /vfh/agl_m (flight node not running?). Low-altitude ground may read as an obstacle.
+[INFO] [1789397581.515536953] [vfh_avoidance_node]: [VFH] ground filter: agl=0.0m
+[INFO] [1789397582.917693197] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 93ms
+[INFO] [1789397583.361527100] [takeoff_land_node]: [T+00:04] PREFLIGHT | balt= 0.00m(EKF-LOCK) | ekf_alt=-5.98m | z= -5.98m | vz=+0.00 | sp_z= 0.00 | disarmed | mode=POSCTL | gps=20sat/0.6 | baro=10Hz
+[WARN] [1789397584.838225174] [vfh_avoidance_node]: [VFH] ground filter INACTIVE: no fresh /vfh/agl_m (flight node not running?). Low-altitude ground may read as an obstacle.
+[INFO] [1789397584.931928517] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=no-agl 100ms
+[INFO] [1789397587.031438332] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=no-agl 132ms
+[INFO] [1789397588.412856725] [takeoff_land_node]: [T+00:09] PREFLIGHT | balt= 0.00m(EKF-LOCK) | ekf_alt=-6.02m | z= -6.02m | vz=+0.00 | sp_z= 0.00 | disarmed | mode=POSCTL | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397589.038061568] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=no-agl 92ms
+[INFO] [1789397589.773461774] [vfh_avoidance_node]: [VFH] ground filter: agl=0.0m
+[INFO] [1789397590.931503872] [takeoff_land_node]: [BARO] Ground reference: baro(filtered) std<0.08m spread<=0.3m rate>=5Hz | EKF z std<0.15m spread<=0.5m |z|<=1000.0m | over 5.0s, held 5s (timeout 60s)
+[WARN] [1789397590.933048498] [takeoff_land_node]: [BARO] reference not usable yet: collecting samples (1/50) (60s left)
+[INFO] [1789397591.093785908] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 179ms
+[WARN] [1789397591.767370552] [vfh_avoidance_node]: [VFH] ground filter INACTIVE: no fresh /vfh/agl_m (flight node not running?). Low-altitude ground may read as an obstacle.
+[INFO] [1789397592.436002333] [vfh_avoidance_node]: [VFH] ground filter: agl=0.0m
+[INFO] [1789397593.244489857] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 138ms
+[INFO] [1789397593.378046678] [takeoff_land_node]: [T+00:14] PREFLIGHT | balt= 0.00m(EKF-LOCK) | ekf_alt=-6.22m | z= -6.22m | vz=+0.00 | sp_z= 0.00 | disarmed | mode=POSCTL | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397595.310221050] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 123ms
+[WARN] [1789397595.961443021] [takeoff_land_node]: [BARO] reference not usable yet: collecting samples (49/50) (55s left)
+[WARN] [1789397597.308165832] [vfh_avoidance_node]: [VFH] ground filter INACTIVE: no fresh /vfh/agl_m (flight node not running?). Low-altitude ground may read as an obstacle.
+[INFO] [1789397597.442377426] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=no-agl 136ms
+[INFO] [1789397598.360640781] [takeoff_land_node]: [T+00:19] PREFLIGHT | balt= 0.00m(EKF-LOCK) | ekf_alt=-6.34m | z= -6.34m | vz=+0.00 | sp_z= 0.00 | disarmed | mode=POSCTL | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397598.529510710] [vfh_avoidance_node]: [VFH] ground filter: agl=0.0m
+[INFO] [1789397599.545600358] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 144ms
+[INFO] [1789397601.087704449] [takeoff_land_node]: [BARO] Ground reference OK. baro h_ground=130.00m (std=0.021, spread=0.08m, raw std 0.077) | EKF ground_z=-6.296m (std=0.035, spread=0.19m) | offset ekf-baro=-136.29m
+[INFO] [1789397601.089400728] [takeoff_land_node]: [T/L] home=(0.02,-0.02) ground_z=-6.30m -> takeoff_z=-4.30m
+[INFO] [1789397601.091746084] [takeoff_land_node]: [FWD] heading yaw=17.2 deg ENU (compass ~73 deg) -> end point=(5.75,1.75)
+[INFO] [1789397601.092451002] [takeoff_land_node]: ==============================================================
+[INFO] [1789397601.093927274] [takeoff_land_node]:   >>> [2/7] READY   (from PREFLIGHT)   T+00:22
+[INFO] [1789397601.095207347] [takeoff_land_node]:       DRONE READY TO LAUNCH — GPS ok, ground_z=-6.30 m, home=(0.02,-0.02), takeoff_z=-4.30 m (physical ~2.0 m)
+[INFO] [1789397601.096549407] [takeoff_land_node]: ==============================================================
+[INFO] [1789397601.097353209] [takeoff_land_node]: [READY] hover 4 s, fly 6.0 m FORWARD (compass ~73 deg) at 0.40 m/s, hold 2 s, then descend at 0.30 m/s to 0.25 m and hand off to AUTO.LAND at the end point
+[WARN] [1789397601.098319736] [takeoff_land_node]: [READY] VFH obstacle avoidance ACTIVE (front camera only, 2-D). Sky above the cruise height must be clear; nothing is seen to the sides or behind.
+[WARN] [1789397601.099066032] [takeoff_land_node]: [READY] PILOT: hold the RC with the mode switch ready. Next step ARMS the drone.
+[INFO] [1789397601.099838313] [takeoff_land_node]: [SAFETY] Waiting for the RC mode switch to be in OFFBOARD (ch5 within 1349-1649)...
+[INFO] [1789397601.100466845] [takeoff_land_node]: [SAFETY] RC mode switch is in OFFBOARD (ch5=1499). OK.
+[INFO] [1789397601.101183284] [takeoff_land_node]: [SAFETY] Kill switch released (ch11=1065). OK.
+[WARN] [1789397601.157179491] [takeoff_land_node]: ==============================================================
+[WARN] [1789397601.168683766] [takeoff_land_node]:   >>> [3/7] ARMING   (from READY)   T+00:22
+[WARN] [1789397601.175849693] [takeoff_land_node]:       PROPELLERS WILL SPIN — streaming setpoints, then ARM + OFFBOARD
+[WARN] [1789397601.221851818] [takeoff_land_node]: ==============================================================
+[INFO] [1789397601.222686213] [takeoff_land_node]: [ARMING] warming up setpoint stream (~2s)...
+[INFO] [1789397601.631843030] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=0.0m 99ms
+[INFO] [1789397603.232386960] [takeoff_land_node]: [ARMING] sending ARM...
+[INFO] [1789397603.287677928] [takeoff_land_node]: [ARM] ARMED
+[INFO] [1789397603.291667369] [vfh_avoidance_node]: [VFH] ground filter: agl=-0.1m
+[INFO] [1789397603.382521212] [takeoff_land_node]: [T+00:24] ARMING    | balt=-0.06m(EKF-LOCK) | ekf_alt=-0.06m | z= -6.36m | vz=+0.00 | drift= 0.06m | sp_z=-6.30->-6.31 | ARMED | mode=POSCTL | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397603.450167171] [vfh_avoidance_node]: [VFH] ground filter: agl=-0.0m
+[INFO] [1789397603.780359488] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=0.30m valleys=0 blocked=9 gnd=agl=-0.0m 201ms
+[INFO] [1789397604.153775889] [takeoff_land_node]: [MODE] -> OFFBOARD (sent)
+[INFO] [1789397604.157676655] [takeoff_land_node]: ==============================================================
+[INFO] [1789397604.196209610] [takeoff_land_node]:   >>> [4/7] TAKEOFF   (from ARMING)   T+00:25
+[INFO] [1789397604.197034213] [takeoff_land_node]:       climbing to z=-4.30 m (physical ~2.0 m), XY pinned to home. Abort limits: drift 1.5 m, alt err 0.6 m
+[INFO] [1789397604.197666553] [takeoff_land_node]: ==============================================================
+[INFO] [1789397605.187389431] [vfh_avoidance_node]: [VFH] ground filter: agl=0.1m
+[INFO] [1789397605.817092437] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=2.72m valleys=0 blocked=8 gnd=agl=0.1m 86ms
+[INFO] [1789397606.270483866] [vfh_avoidance_node]: [VFH] ground filter: agl=0.5m
+[INFO] [1789397606.533431422] [vfh_avoidance_node]: [VFH] ground filter: agl=0.6m
+[INFO] [1789397606.676035319] [vfh_avoidance_node]: [VFH] ground filter: agl=0.7m
+[INFO] [1789397606.904190297] [vfh_avoidance_node]: [VFH] ground filter: agl=0.8m
+[INFO] [1789397607.148884624] [vfh_avoidance_node]: [VFH] ground filter: agl=0.9m
+[INFO] [1789397607.265626631] [vfh_avoidance_node]: [VFH] ground filter: agl=1.0m
+[INFO] [1789397607.372846154] [vfh_avoidance_node]: [VFH] ground filter: agl=1.1m
+[INFO] [1789397607.515039350] [vfh_avoidance_node]: [VFH] ground filter: agl=1.2m
+[INFO] [1789397607.768779442] [vfh_avoidance_node]: [VFH] ground filter: agl=1.3m
+[INFO] [1789397607.922817916] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=2.73m valleys=0 blocked=8 gnd=agl=1.3m 39ms
+[INFO] [1789397608.280115620] [vfh_avoidance_node]: [VFH] ground filter: agl=1.4m
+[INFO] [1789397608.360526311] [takeoff_land_node]: [T+00:29] TAKEOFF   | balt= 1.40m(BARO) | ekf_alt= 1.58m | z= -4.72m | vz=+0.44 | drift= 0.02m | sp_z=-4.30->-4.30 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397608.791315059] [vfh_avoidance_node]: [VFH] ground filter: agl=1.5m
+[INFO] [1789397609.269962023] [vfh_avoidance_node]: [VFH] ground filter: agl=1.6m
+[INFO] [1789397609.766135569] [vfh_avoidance_node]: [VFH] ground filter: agl=1.7m
+[INFO] [1789397610.003382968] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=2.72m valleys=0 blocked=8 gnd=agl=1.7m 92ms
+[INFO] [1789397610.171131868] [vfh_avoidance_node]: [VFH] ground filter: agl=1.8m
+[INFO] [1789397610.294405350] [vfh_avoidance_node]: [VFH] ground filter: agl=1.9m
+[INFO] [1789397610.666366856] [vfh_avoidance_node]: [VFH] ground filter: agl=2.0m
+[INFO] [1789397611.254803667] [vfh_avoidance_node]: [VFH] ground filter: agl=2.1m
+[INFO] [1789397612.049387577] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=2.71m valleys=0 blocked=8 gnd=agl=2.1m 48ms
+[INFO] [1789397612.269536601] [takeoff_land_node]: [TAKEOFF] reached target altitude, alt=2.14 m
+[INFO] [1789397612.293862122] [takeoff_land_node]: ==============================================================
+[INFO] [1789397612.300235991] [takeoff_land_node]:   >>> [5/7] HOVER   (from TAKEOFF)   T+00:33
+[INFO] [1789397612.304366365] [takeoff_land_node]:       holding home for 4 s at z=-4.30 m before moving forward
+[INFO] [1789397612.305066483] [takeoff_land_node]: ==============================================================
+[INFO] [1789397612.305949648] [takeoff_land_node]: [HOVER] moving forward in  4.0 s...
+[INFO] [1789397613.251186707] [vfh_avoidance_node]: [VFH] ground filter: agl=2.2m
+[INFO] [1789397613.363162385] [takeoff_land_node]: [T+00:34] HOVER     | balt= 2.14m(BARO) | ekf_alt= 2.10m | z= -4.19m | vz=-0.11 | drift= 0.04m | sp_z=-4.30->-4.29 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397613.557303785] [vfh_avoidance_node]: [VFH] ground filter: agl=2.1m
+[INFO] [1789397614.082767140] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=2.71m valleys=0 blocked=8 gnd=agl=2.1m 68ms
+[INFO] [1789397614.339209271] [takeoff_land_node]: [HOVER] moving forward in  2.0 s...
+[INFO] [1789397614.815921357] [vfh_avoidance_node]: [VFH] ground filter: agl=2.0m
+[INFO] [1789397616.119366231] [vfh_avoidance_node]: [VFH] state=stop obstacle=front avoid=right steer=+0.0deg target=0.0 front_min=2.71m valleys=0 blocked=8 gnd=agl=2.0m 78ms
+[INFO] [1789397616.388792077] [takeoff_land_node]: ==============================================================
+[INFO] [1789397616.397930100] [takeoff_land_node]:   >>> [6/7] FORWARD   (from HOVER)   T+00:37
+[INFO] [1789397616.398660972] [takeoff_land_node]:       VFH-guided flight to the goal 6.0 m ahead at 0.40 m/s (steering around obstacles; stop < 1.2 m). Abort limits: tracking err 1.5 m, alt err 0.6 m, geofence 8.0 m
+[INFO] [1789397616.399263583] [takeoff_land_node]: ==============================================================
+[INFO] [1789397616.399971766] [takeoff_land_node]: [VFH] goal=(5.75,1.75) from launch=(0.02,-0.02) yaw0=17.2 deg ENU
+[INFO] [1789397616.401020792] [takeoff_land_node]: [FORWARD] BLOCKED        goal  6.0 m at    +0 deg | steer  +0.0 | yaw  +17.2 -> sp  +16.9 | front 2.71m | lead 0.01 m | vfh 0.1s
+[INFO] [1789397617.419070506] [takeoff_land_node]: [FORWARD] AVOID          goal  6.0 m at   +12 deg | steer +25.0 | yaw   +5.5 -> sp   +2.5 | front 2.78m | lead 0.04 m | vfh 0.1s
+[INFO] [1789397618.162660931] [vfh_avoidance_node]: [VFH] state=avoid obstacle=front-left avoid=right steer=+5.0deg target=336.9 front_min=2.70m valleys=1 blocked=4 gnd=agl=2.0m 117ms
+[INFO] [1789397618.367606201] [takeoff_land_node]: [T+00:39] FORWARD   | balt= 2.01m(BARO) | ekf_alt= 1.99m | z= -4.30m | vz=+0.01 | drift= 0.26m | sp_z=-4.30->-4.31 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397618.431239582] [takeoff_land_node]: [FORWARD] AVOID          goal  5.9 m at   +33 deg | steer +10.0 | yaw  -15.5 -> sp  -16.7 | front 2.63m | lead 0.22 m | vfh 0.1s
+[INFO] [1789397619.459199824] [takeoff_land_node]: [FORWARD] AVOID          goal  5.6 m at   +52 deg | steer  +0.0 | yaw  -33.5 -> sp  -33.5 | front - | lead 0.30 m | vfh 0.2s
+[INFO] [1789397620.184106287] [vfh_avoidance_node]: [VFH] state=avoid obstacle=front-left avoid=right steer=+0.0deg target=304.8 front_min=- valleys=1 blocked=3 gnd=agl=2.0m 23ms
+[INFO] [1789397620.464986423] [takeoff_land_node]: [FORWARD] AVOID          goal  5.5 m at   +58 deg | steer  +0.0 | yaw  -36.5 -> sp  -36.5 | front - | lead 0.35 m | vfh 0.1s
+[INFO] [1789397621.479806145] [takeoff_land_node]: [FORWARD] AVOID          goal  5.3 m at   +60 deg | steer  +0.0 | yaw  -36.5 -> sp  -36.5 | front - | lead 0.38 m | vfh 0.0s
+[INFO] [1789397622.316445686] [vfh_avoidance_node]: [VFH] state=avoid obstacle=front-left avoid=right steer=+0.0deg target=297.8 front_min=- valleys=1 blocked=3 gnd=agl=2.0m 51ms
+[INFO] [1789397622.490214461] [takeoff_land_node]: [FORWARD] AVOID          goal  5.2 m at   +63 deg | steer  +0.0 | yaw  -36.5 -> sp  -36.5 | front - | lead 0.38 m | vfh 0.0s
+[INFO] [1789397623.366874045] [takeoff_land_node]: [T+00:44] FORWARD   | balt= 1.97m(BARO) | ekf_alt= 1.90m | z= -4.40m | vz=+0.01 | drift= 0.33m | sp_z=-4.30->-4.38 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397623.496749884] [takeoff_land_node]: [FORWARD] MOVE           goal  5.0 m at   +60 deg | steer -35.0 | yaw  -30.5 -> sp  -29.3 | front - | lead 0.35 m | vfh 0.0s
+[INFO] [1789397624.437057347] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-35.0deg target=301.0 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 45ms
+[INFO] [1789397624.503134743] [takeoff_land_node]: [FORWARD] MOVE           goal  4.9 m at   +55 deg | steer -35.0 | yaw  -22.1 -> sp  -19.7 | front - | lead 0.38 m | vfh 0.1s
+[INFO] [1789397624.890218850] [vfh_avoidance_node]: [VFH] ground filter: agl=2.1m
+[INFO] [1789397625.509006113] [takeoff_land_node]: [FORWARD] AVOID          goal  4.7 m at   +47 deg | steer  +6.7 | yaw  -10.7 -> sp   -8.9 | front - | lead 0.36 m | vfh 0.0s
+[INFO] [1789397626.261072685] [vfh_avoidance_node]: [VFH] ground filter: agl=2.0m
+[INFO] [1789397626.443216899] [vfh_avoidance_node]: [VFH] state=avoid obstacle=front-left avoid=right steer=+13.4deg target=315.1 front_min=- valleys=1 blocked=5 gnd=agl=2.0m 61ms
+[INFO] [1789397626.530008948] [takeoff_land_node]: [FORWARD] AVOID          goal  4.5 m at   +41 deg | steer +13.4 | yaw   -1.1 -> sp   -1.7 | front - | lead 0.30 m | vfh 0.1s
+[INFO] [1789397627.530971904] [takeoff_land_node]: [FORWARD] AVOID          goal  4.3 m at   +31 deg | steer +30.3 | yaw  +11.5 -> sp  +10.3 | front - | lead 0.36 m | vfh 0.1s
+[INFO] [1789397628.367197320] [takeoff_land_node]: [T+00:49] FORWARD   | balt= 2.00m(BARO) | ekf_alt= 1.63m | z= -4.67m | vz=-0.00 | drift= 0.33m | sp_z=-4.30->-4.67 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397628.540316698] [takeoff_land_node]: [FORWARD] AVOID          goal  4.1 m at   +26 deg | steer +31.4 | yaw  +19.3 -> sp  +17.5 | front - | lead 0.35 m | vfh 0.1s
+[INFO] [1789397628.566335938] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-24.0deg target=336.0 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 43ms
+[INFO] [1789397629.554290027] [takeoff_land_node]: [FORWARD] MOVE           goal  3.8 m at   +21 deg | steer -18.0 | yaw  +27.7 -> sp  +28.9 | front - | lead 0.32 m | vfh 0.1s
+[INFO] [1789397630.561370365] [takeoff_land_node]: [FORWARD] MOVE           goal  3.5 m at    -1 deg | steer  -1.8 | yaw  +51.1 -> sp  +52.9 | front - | lead 0.30 m | vfh 0.0s
+[INFO] [1789397630.700000726] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=+1.0deg target=1.0 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 60ms
+[INFO] [1789397631.566914365] [takeoff_land_node]: [FORWARD] MOVE           goal  3.2 m at    -4 deg | steer  +3.0 | yaw  +54.8 -> sp  +54.0 | front - | lead 0.36 m | vfh 0.0s
+[INFO] [1789397631.624992335] [vfh_avoidance_node]: [VFH] ground filter: agl=1.9m
+[INFO] [1789397632.134797075] [vfh_avoidance_node]: [VFH] ground filter: agl=2.0m
+[INFO] [1789397632.284150182] [vfh_avoidance_node]: [VFH] ground filter: agl=1.9m
+[INFO] [1789397632.386497613] [vfh_avoidance_node]: [VFH] ground filter: agl=2.0m
+[INFO] [1789397632.580295931] [takeoff_land_node]: [FORWARD] MOVE           goal  2.8 m at    -5 deg | steer  +3.5 | yaw  +55.7 -> sp  +54.0 | front - | lead 0.29 m | vfh 0.0s
+[INFO] [1789397632.788367925] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=+2.8deg target=2.8 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 26ms
+[INFO] [1789397633.363867361] [takeoff_land_node]: [T+00:54] FORWARD   | balt= 2.01m(BARO) | ekf_alt= 1.67m | z= -4.63m | vz=-0.01 | drift= 0.30m | sp_z=-4.30->-4.64 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397633.587031362] [takeoff_land_node]: [FORWARD] MOVE           goal  2.6 m at    -3 deg | steer  +4.6 | yaw  +54.6 -> sp  +52.7 | front - | lead 0.34 m | vfh 0.0s
+[INFO] [1789397634.600086614] [takeoff_land_node]: [FORWARD] MOVE           goal  2.2 m at    -1 deg | steer  +4.6 | yaw  +53.0 -> sp  +51.2 | front - | lead 0.30 m | vfh 0.0s
+[INFO] [1789397634.802446040] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-0.7deg target=359.3 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 40ms
+[INFO] [1789397635.630797315] [takeoff_land_node]: [FORWARD] MOVE           goal  2.0 m at    +1 deg | steer  +2.0 | yaw  +50.5 -> sp  +48.5 | front - | lead 0.38 m | vfh 0.1s
+[INFO] [1789397636.644429033] [takeoff_land_node]: [FORWARD] MOVE           goal  1.6 m at    +4 deg | steer  -1.1 | yaw  +47.8 -> sp  +48.9 | front - | lead 0.33 m | vfh 0.1s
+[INFO] [1789397636.810266193] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-1.2deg target=358.8 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 38ms
+[INFO] [1789397637.661134035] [takeoff_land_node]: [FORWARD] MOVE           goal  1.3 m at    +2 deg | steer  -3.7 | yaw  +49.8 -> sp  +51.5 | front - | lead 0.29 m | vfh 0.0s
+[INFO] [1789397638.368164787] [takeoff_land_node]: [T+00:59] FORWARD   | balt= 1.98m(BARO) | ekf_alt= 1.72m | z= -4.58m | vz=+0.00 | drift= 0.30m | sp_z=-4.30->-4.56 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397638.692341553] [takeoff_land_node]: [FORWARD] MOVE           goal  1.0 m at    +1 deg | steer  -1.6 | yaw  +51.6 -> sp  +53.2 | front - | lead 0.29 m | vfh 0.1s
+[INFO] [1789397638.817073866] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=+0.2deg target=0.2 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 35ms
+[INFO] [1789397639.698658251] [takeoff_land_node]: [FORWARD] MOVE           goal  0.7 m at    -3 deg | steer  +0.4 | yaw  +53.6 -> sp  +53.7 | front - | lead 0.32 m | vfh 0.0s
+[INFO] [1789397640.344567992] [takeoff_land_node]: [FORWARD] goal reached (0.46 m from it); holding here
+[INFO] [1789397640.345462036] [takeoff_land_node]: [FORWARD] setpoint at the end point — holding 2 s
+[INFO] [1789397640.346295727] [takeoff_land_node]: [HOLD] landing in  2.0 s...
+[INFO] [1789397640.898243395] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-2.5deg target=357.5 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 37ms
+[INFO] [1789397642.444101634] [takeoff_land_node]: [FORWARD] end point reached, error 0.15 m; landing here
+[INFO] [1789397642.445827482] [takeoff_land_node]: ==============================================================
+[INFO] [1789397642.446446318] [takeoff_land_node]:   >>> [7/7] LANDING   (from FORWARD)   T+01:04
+[INFO] [1789397642.447029856] [takeoff_land_node]:       controlled descent at 0.30 m/s to 0.25 m above ground, then AUTO.LAND
+[INFO] [1789397642.447553201] [takeoff_land_node]: ==============================================================
+[INFO] [1789397642.925794523] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-2.5deg target=357.5 front_min=- valleys=1 blocked=0 gnd=agl=2.0m 36ms
+[INFO] [1789397643.367669647] [takeoff_land_node]: [T+01:04] LANDING   | balt= 2.01m(BARO) | ekf_alt= 1.73m | z= -4.57m | vz=-0.13 | drift= 0.01m | sp_z=-4.55->-4.75 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397644.566734071] [vfh_avoidance_node]: [VFH] ground filter: agl=1.9m
+[INFO] [1789397644.927715448] [vfh_avoidance_node]: [VFH] ground filter: agl=1.8m
+[INFO] [1789397644.987138422] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-2.5deg target=357.5 front_min=- valleys=1 blocked=0 gnd=agl=1.8m 65ms
+[INFO] [1789397645.386278567] [vfh_avoidance_node]: [VFH] ground filter: agl=1.7m
+[INFO] [1789397645.670285300] [vfh_avoidance_node]: [VFH] ground filter: agl=1.6m
+[INFO] [1789397646.166454944] [vfh_avoidance_node]: [VFH] ground filter: agl=1.5m
+[INFO] [1789397646.549402951] [vfh_avoidance_node]: [VFH] ground filter: agl=1.4m
+[INFO] [1789397646.787023643] [vfh_avoidance_node]: [VFH] ground filter: agl=1.3m
+[INFO] [1789397647.125767343] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-2.5deg target=357.5 front_min=- valleys=1 blocked=0 gnd=agl=1.3m 69ms
+[INFO] [1789397647.175055270] [vfh_avoidance_node]: [VFH] ground filter: agl=1.2m
+[INFO] [1789397647.406970850] [vfh_avoidance_node]: [VFH] ground filter: agl=1.1m
+[INFO] [1789397647.656939109] [vfh_avoidance_node]: [VFH] ground filter: agl=1.0m
+[INFO] [1789397648.047821804] [vfh_avoidance_node]: [VFH] ground filter: agl=0.9m
+[INFO] [1789397648.175293950] [vfh_avoidance_node]: [VFH] ground filter: agl=0.8m
+[INFO] [1789397648.371503930] [takeoff_land_node]: [T+01:09] LANDING   | balt= 0.82m(EKF-LOCK) | ekf_alt= 0.18m | z= -6.12m | vz=-0.30 | drift= 0.01m | sp_z=-5.94->-6.45 | ARMED | mode=OFFBOARD | gps=20sat/0.6 | baro=10Hz
+[INFO] [1789397648.648434339] [vfh_avoidance_node]: [VFH] ground filter: agl=0.7m
+[INFO] [1789397648.780948632] [takeoff_land_node]: [T/L] Descent complete at z=-6.30m (handoff=0.25m above ground).
+[WARN] [1789397648.792579887] [takeoff_land_node]: [LANDING] handing touchdown to PX4 AUTO.LAND — this node stops commanding the drone from here
+[INFO] [1789397648.895890709] [vfh_avoidance_node]: [VFH] ground filter: agl=0.6m
+[INFO] [1789397649.045495153] [takeoff_land_node]: [MODE] -> AUTO.LAND (sent)
+[INFO] [1789397649.047072196] [takeoff_land_node]: [LANDING] AUTO.LAND in progress, waiting for auto-disarm... (20.0 s left)
+[INFO] [1789397649.186203278] [vfh_avoidance_node]: [VFH] state=move obstacle=none avoid=none steer=-2.5deg target=357.5 front_min=- valleys=1 blocked=0 gnd=agl=0.6m 39ms
+[INFO] [1789397649.284274731] [vfh_avoidance_node]: [VFH] ground filter: agl=0.5m
+[INFO] [1789397649.702155161] [vfh_avoidance_node]: [VFH] ground filter: agl=0.3m
+[INFO] [1789397650.984623750] [takeoff_land_node]: ==============================================================
+[INFO] [1789397650.986689288] [takeoff_land_node]:   >>> DONE   (from LANDING)   T+01:12
+[INFO] [1789397650.988365694] [takeoff_land_node]:       MISSION COMPLETE — goal reached (0.46 m from it), landed & disarmed
+[INFO] [1789397650.995472676] [takeoff_land_node]: ==============================================================
+RESULT {"scenario": "gate", "phase": "DONE", "mission": "DONE", "leg_result": "goal reached (0.46 m from it)", "armed_end": false, "mode_end": "AUTO.LAND", "events": [[25.56886887550354, "ARM"], [26.427189350128174, "MODE OFFBOARD"], [71.31992197036743, "MODE AUTO.LAND"], [73.04703259468079, "AUTO-DISARM (landed)"]], "end_ahead_left": [5.89, -0.12], "dist_to_goal_end": 0.16, "min_clearance_m": 0.71, "min_clearance_at": [54.3, 3.84, -0.62], "max_true_alt": 2.17, "z_true_end": 0.0, "depth_frames": 581, "vfh_msgs": 532, "kill_latched": false, "stream_on": false, "phases": [[0.8, "PREFLIGHT"], [23.4, "READY"], [23.4, "ARMING"], [26.5, "TAKEOFF"], [34.6, "HOVER"], [38.7, "FORWARD"], [64.8, "LANDING"], [73.3, "DONE"]], "track": [[0.8, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [2.8, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [4.8, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [6.8, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [8.9, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [11.0, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [13.0, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [15.1, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [17.1, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [19.2, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [21.2, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [23.2, 0.0, 0.0, 0.0, 17.0, "PREFLIGHT"], [25.2, 0.0, 0.0, 0.0, 17.0, "ARMING"], [27.3, 0.01, -0.01, 0.19, 17.0, "TAKEOFF"], [29.3, 0.02, -0.02, 0.97, 17.0, "TAKEOFF"], [31.3, 0.02, -0.02, 1.8, 17.0, "TAKEOFF"], [33.3, 0.02, -0.02, 2.17, 17.0, "TAKEOFF"], [35.3, 0.02, -0.02, 2.08, 17.0, "HOVER"], [37.4, 0.02, -0.02, 1.96, 17.0, "HOVER"], [39.4, 0.02, -0.02, 2.0, 10.0, "FORWARD"], [41.4, 0.29, -0.05, 2.02, -30.0, "FORWARD"], [43.4, 0.8, -0.3, 2.01, -37.0, "FORWARD"], [45.5, 1.33, -0.67, 2.03, -31.0, "FORWARD"], [47.5, 1.88, -0.98, 2.06, -17.0, "FORWARD"], [49.5, 2.51, -1.16, 1.97, 5.0, "FORWARD"], [51.5, 3.13, -1.1, 1.96, 32.0, "FORWARD"], [53.5, 3.67, -0.8, 1.95, 50.0, "FORWARD"], [55.5, 4.1, -0.33, 2.0, 52.0, "FORWARD"], [57.6, 4.48, 0.14, 1.99, 53.0, "FORWARD"], [59.6, 4.87, 0.64, 1.99, 51.0, "FORWARD"], [61.6, 5.26, 1.12, 2.0, 49.0, "FORWARD"], [63.6, 5.59, 1.53, 2.02, 51.0, "FORWARD"], [65.6, 5.65, 1.61, 1.99, 51.0, "LANDING"], [67.6, 5.66, 1.62, 1.47, 51.0, "LANDING"], [69.6, 5.66, 1.63, 0.79, 51.0, "LANDING"], [71.7, 5.66, 1.63, 0.16, 51.0, "LANDING"]]}
+The following exception was never retrieved: cannot use Destroyable because destruction was requested
+The following exception was never retrieved: cannot use Destroyable because destruction was requested
