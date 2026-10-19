@@ -208,7 +208,7 @@ def mavros_and_reader():
     mavros_node = Node(
         package="mavros",
         executable="mavros_node",
-        namespace="mavros",
+        # MAVNS (2026-10-15): no namespace="mavros" - MAVROS >= 2.15.1 adds /mavros itself (with it: /mavros/mavros/*)
         output="screen",
         parameters=[
             {"fcu_url":             fcu_url},

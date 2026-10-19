@@ -192,6 +192,32 @@ POST_CHECK_CLEAR_MIN = HARD_DIS_CENTER - 0.05   # m from center (0.55)
 # inference-only (the expert has no counterpart), so only its units changed.
 GUARD_CLEAR_CENTER   = 0.70   # m from center (= 0.40 body-edge)
 
+# ── NEW (2026-09-21, SAFEDIST): EXPLICIT AIRFRAME SAFETY DISTANCE ────────────
+# Every threshold above is a CENTRE-OF-MASS distance, so what it means
+# physically depends on how big the airframe actually is — a number this file
+# never stated. The values are inherited from the x500 simulation (body radius
+# 0.30 m) and were only ever conservative for a smaller frame BY ACCIDENT.
+# Two parameters state the geometry explicitly:
+#
+#   drone_radius   m  centre -> furthest point of the airframe. For a square
+#                     frame of side S (motor-to-motor incl. props) that is the
+#                     HALF-DIAGONAL S/2*sqrt(2), NOT S/2 — the corners hit
+#                     first. A 30x30 cm frame -> 0.15*sqrt(2) = 0.212 m.
+#   safety_margin  m  the air gap demanded between that outer edge and an
+#                     obstacle.
+#
+#       safety_floor_centre = drone_radius + safety_margin
+#
+# That sum becomes a FLOOR under every centre-of-mass clearance this node uses
+# — including the anti-deadlock relaxation in _validate_planned_traj, which is
+# otherwise free to walk the reject line down towards the airframe. It only
+# ever RAISES a threshold: a launch asking for more keeps more.
+#
+# Both default to 0.0 = feature off = byte-identical behaviour, because this
+# module is shared with the simulation / expert pipeline.
+DRONE_RADIUS_M_DEFAULT  = 0.0
+SAFETY_MARGIN_M_DEFAULT = 0.0
+
 LOOKAHEAD_HORIZON_S    = 1.5
 LOOKAHEAD_STEP_S       = 0.3
 LOOKAHEAD_CHECK_PERIOD = 10    # check every N publish ticks (10 Hz @ cmd_hz=100)
@@ -365,6 +391,10 @@ class FMInferenceBase(Node):
         self.declare_parameter("safe_dis",           SAFE_DIS_CENTER)
         self.declare_parameter("hard_clearance",     POST_CHECK_CLEAR_MIN)
         self.declare_parameter("guard_clearance",    GUARD_CLEAR_CENTER)
+        # NEW (2026-09-21, SAFEDIST): airframe geometry -> hard floor under
+        # every clearance above. 0 = off (default). See the constants block.
+        self.declare_parameter("drone_radius",  DRONE_RADIUS_M_DEFAULT)
+        self.declare_parameter("safety_margin", SAFETY_MARGIN_M_DEFAULT)
         self.declare_parameter("collision_cost_tol", 1.0)
         self.declare_parameter("planning_time_ahead", 0.3)
         # ── Anti-collision hardening (2026-07-27) ────────────────────────────
@@ -491,6 +521,32 @@ class FMInferenceBase(Node):
         self._safe_dis       = float(self.get_parameter("safe_dis").value)
         self._hard_clearance = float(self.get_parameter("hard_clearance").value)
         self._guard_clear    = float(self.get_parameter("guard_clearance").value)
+        # NEW (2026-09-21, SAFEDIST) — see the constants block.
+        self._drone_radius  = max(0.0, float(
+            self.get_parameter("drone_radius").value))
+        self._safety_margin = max(0.0, float(
+            self.get_parameter("safety_margin").value))
+        self._safety_floor  = self._drone_radius + self._safety_margin
+        # Raised copies of the two module constants the code below compares
+        # against. With the feature off they are the constants themselves.
+        self._hard_dis_center  = max(HARD_DIS_CENTER, self._safety_floor)
+        self._post_check_floor = max(POST_CHECK_FLOOR_CENTER, self._safety_floor)
+        self._safedist_clamped = []     # (name, asked, applied) -> banner
+        self._safedist_violations = 0   # measured clearance below the floor
+        if self._safety_floor > 0.0:
+            def _floor_up(name, value, floor):
+                if value < floor:
+                    self._safedist_clamped.append((name, value, floor))
+                    return floor
+                return value
+            # safe_dis is the SOFT tier and must stay strictly above the hard
+            # barrier, or the cubic soft zone collapses to nothing.
+            self._safe_dis       = _floor_up(
+                "safe_dis", self._safe_dis, self._safety_floor + 0.05)
+            self._hard_clearance = _floor_up(
+                "hard_clearance", self._hard_clearance, self._safety_floor)
+            self._guard_clear    = _floor_up(
+                "guard_clearance", self._guard_clear, self._safety_floor)
         self._coll_tol       = float(self.get_parameter("collision_cost_tol").value)
         self._dt_ahead       = float(self.get_parameter("planning_time_ahead").value)
         self._max_plan_cost  = float(self.get_parameter("max_plan_cost").value)
@@ -537,7 +593,9 @@ class FMInferenceBase(Node):
         # expert. cfg.safe_dis is overwritten every replan with the adaptive +
         # speed-aware value (see _replan); hard_dis is set once here.
         cfg.safe_dis           = max(0.0, self._safe_dis - BODY_RADIUS_M)
-        cfg.hard_dis           = max(0.0, HARD_DIS_CENTER - BODY_RADIUS_M)
+        # NEW (2026-09-21, SAFEDIST): _hard_dis_center == HARD_DIS_CENTER
+        # unless the airframe safety distance demands more.
+        cfg.hard_dis           = max(0.0, self._hard_dis_center - BODY_RADIUS_M)
         cfg.init_wpts_num      = 2
         cfg.init_T             = 2.5
         cfg.delta_t            = 0.1
@@ -667,12 +725,37 @@ class FMInferenceBase(Node):
         # All three are CENTER-OF-MASS clearances (see BODY_RADIUS_M).
         self.get_logger().info(
             f"  safe_dis      : {self._safe_dis:.2f} m soft / "
-            f"{HARD_DIS_CENTER:.2f} m hard  [center-of-mass, "
+            f"{self._hard_dis_center:.2f} m hard  [center-of-mass, "
             f"body radius {BODY_RADIUS_M:.2f} m]")
         self.get_logger().info(
             f"  post-check    : {self._hard_clearance:.2f} m (center) "
             f"| +{self._speed_margin_k:.2f} m per m/s speed margin")
         self.get_logger().info(f"  guard_clear   : {self._guard_clear:.2f} m (center)")
+        # NEW (2026-09-21, SAFEDIST)
+        if self._safety_floor > 0.0:
+            self.get_logger().info(
+                f"  Safety dist   : body radius {self._drone_radius:.3f} m "
+                f"+ margin {self._safety_margin:.2f} m = "
+                f"{self._safety_floor:.3f} m MIN from centre "
+                f"(hard floor, never relaxed)")
+            self.get_logger().info(
+                "                  air gap frame->obstacle at each tier: "
+                + " ".join(
+                    f"{n} {v - self._drone_radius:.2f}" for n, v in (
+                        ("soft", self._safe_dis),
+                        ("barrier", self._hard_dis_center),
+                        ("guard", self._guard_clear),
+                        ("post-check", self._hard_clearance),
+                        ("floor", self._post_check_floor)))
+                + " m")
+            for _n, _asked, _applied in self._safedist_clamped:
+                self.get_logger().warn(
+                    f"  Safety dist   : {_n} {_asked:.2f} -> {_applied:.2f} m "
+                    "(raised to the airframe safety distance)")
+        else:
+            self.get_logger().info(
+                "  Safety dist   : OFF (drone_radius=0) — clearances above are "
+                f"centre-of-mass, assumed body radius {BODY_RADIUS_M:.2f} m")
         self.get_logger().info(f"  Replan        : {self._replan_period} s")
         # NEW (2026-09-14)
         self.get_logger().info(
@@ -700,7 +783,7 @@ class FMInferenceBase(Node):
         self.get_logger().info(
             f"  Plan gate     : cost <= "
             + (f"{self._max_plan_cost:.0f}" if self._max_plan_cost > 0 else "OFF")
-            + f" | post-check floor {POST_CHECK_FLOOR_CENTER:.2f} m")
+            + f" | post-check floor {self._post_check_floor:.2f} m")
         self.get_logger().info(
             f"  Speed limit   : "
             + ("clearance-proportional (floor "
@@ -1454,6 +1537,18 @@ class FMInferenceBase(Node):
             admitted for escaping the soft zone and not for lingering in it."""
         cur_clear = float(self._esdf.get_edt_dis(
             self._drone_state.global_pos[:2])) + BODY_RADIUS_M
+        # NEW (2026-09-21, SAFEDIST): the drone itself is inside the demanded
+        # keep-out. Not an abort — the outward-only rule below is what gets it
+        # out — but it must be visible in the log and in the run summary.
+        if self._safety_floor > 0.0 and cur_clear < self._safety_floor:
+            self._safedist_violations += 1
+            self.get_logger().warn(
+                f"[SAFEDIST] centre clearance {cur_clear:.2f} m < "
+                f"{self._safety_floor:.2f} m "
+                f"(body {self._drone_radius:.2f} + margin "
+                f"{self._safety_margin:.2f}) — only "
+                f"{cur_clear - self._drone_radius:+.2f} m from the airframe",
+                throttle_duration_sec=2.0)
         relaxed = cur_clear - 0.05 < self._hard_clearance
         # "Do not get worse than where we already are" ...
         thr = min(self._hard_clearance, cur_clear - 0.05)
@@ -1463,7 +1558,14 @@ class FMInferenceBase(Node):
         # a drone that is too close would be unable to plan its way out at all.
         # That is the deadlock the adaptive rule was written to prevent, so the
         # floor follows the drone down instead of pinning the bar above it.
-        thr = max(thr, min(POST_CHECK_FLOOR_CENTER, cur_clear))
+        # NEW (2026-09-21, SAFEDIST): _post_check_floor == POST_CHECK_FLOOR_
+        # CENTER unless the airframe safety distance is higher. The min() with
+        # cur_clear (the "follow the drone down" escape hatch) is kept: a
+        # trajectory starts at the drone's own position, so pinning the bar
+        # above a drone that is ALREADY too close rejects the outward plan too.
+        # The relaxed branch below is what makes that safe — inside the band
+        # only a plan that actually LEAVES is admitted.
+        thr = max(thr, min(self._post_check_floor, cur_clear))
         clears = [float(self._esdf.get_edt_dis(p[:2])) + BODY_RADIUS_M
                   for p in self._planner.get_pos_array()]
         for d in clears:
@@ -1529,7 +1631,8 @@ class FMInferenceBase(Node):
                      + BODY_RADIUS_M)
         speed_now = float(np.linalg.norm(sync_state.global_vel[:2]))
         safe_dis_base = float(np.clip(
-            cur_clear - 0.05, HARD_DIS_CENTER, self._safe_dis))
+            cur_clear - 0.05, self._hard_dis_center,   # SAFEDIST
+            self._safe_dis))
         safe_dis_eff  = safe_dis_base + self._speed_margin_k * speed_now  # center
         self._planner.safe_dis = max(0.0, safe_dis_eff - BODY_RADIUS_M)  # -> edge
         ok = False
@@ -2013,6 +2116,11 @@ class FMInferenceBase(Node):
             f"post-check {self._n_graze_reject}, tightest speed cap "
             + (f"{self._v_limited_min:.2f} m/s" if self._v_limited_min
                is not None else "none"))
+        if self._safety_floor > 0.0:   # NEW (2026-09-21, SAFEDIST)
+            self.get_logger().info(
+                f"[INF] Safety distance {self._safety_floor:.3f} m (centre): "
+                + ("never breached" if self._safedist_violations == 0 else
+                   f"BREACHED on {self._safedist_violations} replan check(s)"))
         if self._traj_stats:   # NEW (2026-09-15, WFEAS)
             a = np.array(self._traj_stats)
             self.get_logger().info(

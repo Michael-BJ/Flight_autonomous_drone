@@ -128,9 +128,9 @@ def generate_launch_description():
             "flying_yaw_mode", default_value="home",
             description="home = nose locked toward goal | smooth = follows "
                         "the path, rate-limited | velocity = old (swings)"),
-        DeclareLaunchArgument("yaw_smooth_tau_s",   default_value="1.0"),
+        DeclareLaunchArgument("yaw_smooth_tau_s",   default_value="1.5"),   # YAWFIX (2026-09-30): was 1.0
         DeclareLaunchArgument("yaw_rate_max_dps",   default_value="30.0"),
-        DeclareLaunchArgument("yaw_min_speed",      default_value="0.15"),
+        DeclareLaunchArgument("yaw_min_speed",      default_value="0.05"),  # YAWFIX (2026-09-30): was 0.15
         DeclareLaunchArgument("yaw_max_offset_deg", default_value="60.0"),
         DeclareLaunchArgument("yaw_deadband_deg",   default_value="15.0"),
         DeclareLaunchArgument(

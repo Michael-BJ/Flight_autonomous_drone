@@ -12,7 +12,10 @@ USAGE:
 
 PARAMS: fcu_url, target_alt, hover_time, cmd_hz, descent_speed, auto_land_mode,
         land_handoff_alt, rc_override_enabled, verify_rc_override_param,
-        max_pos_error, max_vz, max_alt_error
+        max_pos_error, max_vz, max_alt_error,
+        require_gps, min_fix_type, min_satellites, max_hdop, gps_wait_timeout,
+        gps_stable_dur, max_ground_z, ekf_window_s, max_ground_drift,
+        status_period_s, color_output
 
 START ORDER (with delays):
     t=0   : kill stale processes + start MAVROS
@@ -68,9 +71,42 @@ def generate_launch_description():
         "verify_rc_override_param", default_value="true",
         description="Pre-flight check of PX4 COM_RC_OVERRIDE. Set false only "
                      "for bench tests without a battery/RC bound.")
+    arg_rc_offb   = DeclareLaunchArgument(
+        "require_rc_offboard", default_value="true",
+        description="Refuse to ARM unless the RC mode switch is already "
+                    "in the OFFBOARD slot. Set false only for bench "
+                    "tests with no RC bound.")
     arg_max_pos   = DeclareLaunchArgument("max_pos_error",  default_value="2.0")
     arg_max_vz    = DeclareLaunchArgument("max_vz",         default_value="3.0")
     arg_max_alt   = DeclareLaunchArgument("max_alt_error",  default_value="1.5")
+    # ── GPS quality pre-arm gate (see takeoff_land_node._wait_gps_quality) ────
+    arg_req_gps   = DeclareLaunchArgument(
+        "require_gps", default_value="true",
+        description="Refuse to ARM until GPS is genuinely usable. Set false "
+                    "ONLY for indoor flight where a healthy VIO/optical-flow "
+                    "source provides PX4's local position.")
+    arg_min_fix   = DeclareLaunchArgument("min_fix_type",     default_value="3")
+    arg_min_sats  = DeclareLaunchArgument("min_satellites",   default_value="8")
+    arg_max_hdop  = DeclareLaunchArgument("max_hdop",         default_value="2.0")
+    arg_gps_to    = DeclareLaunchArgument("gps_wait_timeout", default_value="120.0")
+    arg_gps_dur   = DeclareLaunchArgument("gps_stable_dur",   default_value="5.0")
+    # ── EKF ground_z trust criteria (see takeoff_land_node._wait_ekf_stable) ──
+    # NEW (2026-09-14): default 1.0 -> 1000.0 (user request). z = 0 is the EKF
+    # origin at Pixhawk power-on, not the ground; std/drift gates stay active.
+    arg_max_gnd_z = DeclareLaunchArgument(
+        "max_ground_z", default_value="1000.0",
+        description="Max |local-frame z| accepted while ON THE GROUND. A "
+                    "steady but far-from-zero z means the estimate is broken, "
+                    "not stable (2026-08-27: 5.46 m accepted, drone hit a tree).")
+    arg_ekf_win   = DeclareLaunchArgument("ekf_window_s",     default_value="5.0")
+    arg_gnd_drift = DeclareLaunchArgument("max_ground_drift", default_value="0.20")
+    # ── Terminal monitoring (see takeoff_land_node._announce_phase) ──────────
+    arg_status_p  = DeclareLaunchArgument(
+        "status_period_s", default_value="2.0",
+        description="How often the [T+mm:ss] PHASE status line is printed.")
+    arg_color     = DeclareLaunchArgument(
+        "color_output", default_value="true",
+        description="ANSI colour. Set false when piping the log to a file.")
 
     fcu_url       = LaunchConfiguration("fcu_url")
     target_alt    = LaunchConfiguration("target_alt")
@@ -81,16 +117,28 @@ def generate_launch_description():
     land_handoff  = LaunchConfiguration("land_handoff_alt")
     rc_override   = LaunchConfiguration("rc_override_enabled")
     verify_rc     = LaunchConfiguration("verify_rc_override_param")
+    rc_offb       = LaunchConfiguration("require_rc_offboard")
     max_pos_error = LaunchConfiguration("max_pos_error")
     max_vz        = LaunchConfiguration("max_vz")
     max_alt_error = LaunchConfiguration("max_alt_error")
+    require_gps   = LaunchConfiguration("require_gps")
+    min_fix_type  = LaunchConfiguration("min_fix_type")
+    min_sats      = LaunchConfiguration("min_satellites")
+    max_hdop      = LaunchConfiguration("max_hdop")
+    gps_wait_to   = LaunchConfiguration("gps_wait_timeout")
+    gps_stable    = LaunchConfiguration("gps_stable_dur")
+    max_ground_z  = LaunchConfiguration("max_ground_z")
+    ekf_window_s  = LaunchConfiguration("ekf_window_s")
+    max_gnd_drift = LaunchConfiguration("max_ground_drift")
+    status_period = LaunchConfiguration("status_period_s")
+    color_output  = LaunchConfiguration("color_output")
 
     kill_old = OpaqueFunction(function=_kill_stale)
 
     mavros_node = Node(
         package="mavros",
         executable="mavros_node",
-        namespace="mavros",
+        # MAVNS (2026-10-15): no namespace="mavros" - MAVROS >= 2.15.1 adds /mavros itself (with it: /mavros/mavros/*)
         output="screen",
         parameters=[
             {"fcu_url":             fcu_url},
@@ -133,9 +181,21 @@ def generate_launch_description():
                     "land_handoff_alt":    ParameterValue(land_handoff,  value_type=float),
                     "rc_override_enabled": ParameterValue(rc_override,   value_type=bool),
                     "verify_rc_override_param": ParameterValue(verify_rc, value_type=bool),
+                    "require_rc_offboard": ParameterValue(rc_offb,  value_type=bool),
                     "max_pos_error":       ParameterValue(max_pos_error, value_type=float),
                     "max_vz":              ParameterValue(max_vz,        value_type=float),
                     "max_alt_error":       ParameterValue(max_alt_error, value_type=float),
+                    "require_gps":         ParameterValue(require_gps,  value_type=bool),
+                    "min_fix_type":        ParameterValue(min_fix_type, value_type=int),
+                    "min_satellites":      ParameterValue(min_sats,     value_type=int),
+                    "max_hdop":            ParameterValue(max_hdop,     value_type=float),
+                    "gps_wait_timeout":    ParameterValue(gps_wait_to,  value_type=float),
+                    "gps_stable_dur":      ParameterValue(gps_stable,   value_type=float),
+                    "max_ground_z":        ParameterValue(max_ground_z, value_type=float),
+                    "ekf_window_s":        ParameterValue(ekf_window_s, value_type=float),
+                    "max_ground_drift":    ParameterValue(max_gnd_drift, value_type=float),
+                    "status_period_s":     ParameterValue(status_period, value_type=float),
+                    "color_output":        ParameterValue(color_output,  value_type=bool),
                     "use_ekf_stable":      True,
                 }],
             ),
@@ -144,6 +204,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         arg_fcu_url, arg_alt, arg_hover, arg_cmd_hz, arg_descent, arg_auto_land,
-        arg_handoff, arg_rc_ovr, arg_verify_rc, arg_max_pos, arg_max_vz, arg_max_alt,
+        arg_handoff, arg_rc_ovr, arg_verify_rc, arg_rc_offb,
+        arg_max_pos, arg_max_vz, arg_max_alt,
+        arg_req_gps, arg_min_fix, arg_min_sats, arg_max_hdop, arg_gps_to, arg_gps_dur,
+        arg_max_gnd_z, arg_ekf_win, arg_gnd_drift, arg_status_p, arg_color,
         kill_old, mavros_node, reader, takeoff_node,
     ])

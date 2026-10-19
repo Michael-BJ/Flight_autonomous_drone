@@ -192,6 +192,12 @@ def generate_launch_description():
         DeclareLaunchArgument("safe_dis",            default_value="0.8"),
         DeclareLaunchArgument("hard_clearance",      default_value="0.55"),
         DeclareLaunchArgument("guard_clearance",     default_value="0.60"),
+        # NEW (2026-09-21, SAFEDIST): airframe geometry -> hard floor under
+        # every centre-of-mass clearance above. 0.212 = half-diagonal of a
+        # 30x30 cm frame (0.15*sqrt(2)); 0.20 = demanded air gap from the
+        # frame to an obstacle. drone_radius:=0.0 switches the floor off.
+        DeclareLaunchArgument("drone_radius",        default_value="0.212"),
+        DeclareLaunchArgument("safety_margin",       default_value="0.20"),
         DeclareLaunchArgument("collision_cost_tol",  default_value="20.0"),
         DeclareLaunchArgument("planning_time_ahead", default_value="0.3"),
         DeclareLaunchArgument("speed_margin_k",      default_value="0.25"),
@@ -205,9 +211,9 @@ def generate_launch_description():
         DeclareLaunchArgument("w_feasibility",       default_value="1000.0"),  # NEW (2026-09-15, WFEAS)
         # NEW (2026-09-15, YAWSMOOTH): yaw while FLYING (same as fm_real)
         DeclareLaunchArgument("flying_yaw_mode",     default_value="home"),
-        DeclareLaunchArgument("yaw_smooth_tau_s",    default_value="1.0"),
+        DeclareLaunchArgument("yaw_smooth_tau_s",    default_value="1.5"),   # YAWFIX (2026-09-30): was 1.0
         DeclareLaunchArgument("yaw_rate_max_dps",    default_value="30.0"),
-        DeclareLaunchArgument("yaw_min_speed",       default_value="0.15"),
+        DeclareLaunchArgument("yaw_min_speed",       default_value="0.05"),  # YAWFIX (2026-09-30): was 0.15
         DeclareLaunchArgument("yaw_max_offset_deg",  default_value="60.0"),
         DeclareLaunchArgument("yaw_deadband_deg",    default_value="15.0"),
         DeclareLaunchArgument("use_mode_persistence",   default_value="false"),
@@ -235,6 +241,24 @@ def generate_launch_description():
         DeclareLaunchArgument("occ_min_z",  default_value="0.6"),
         DeclareLaunchArgument("occ_max_z",  default_value="2.0"),
         DeclareLaunchArgument("publish_3d_map", default_value="false"),
+        # NEW (2026-10-02, KEEPMAP): true = the octomap is NOT wiped at
+        # HOVER->FLYING nor after failed replans (only the pre-ARM wipe stays)
+        DeclareLaunchArgument(
+            "keep_octomap", default_value="false",
+            description="true: keep the octomap from takeoff to landing (no "
+                        "wipe at HOVER->FLYING / on stalled replans)"),
+        # NEW (2026-10-06, VOXCONF): voxel confirmation in depth_to_pointcloud.
+        # 1 = off (unchanged behaviour). 2 = a depth point reaches octomap only
+        # once its voxel was hit in 2 frames within confirm_window_s — removes
+        # the one-frame blobs that pile up 3-4 m ahead with keep_octomap:=true.
+        DeclareLaunchArgument(
+            "confirm_hits", default_value="1",
+            description="1: off | 2: a voxel must be seen in 2 depth frames "
+                        "within confirm_window_s before octomap gets its points "
+                        "(do NOT use 3: it loses real obstacle voxels)"),
+        DeclareLaunchArgument(
+            "confirm_window_s", default_value="2.0",
+            description="time window of confirm_hits, seconds"),
 
         # ── Altitude gate for depth processing ───────────────────────────────
         DeclareLaunchArgument("gate_enabled", default_value="true"),
@@ -311,6 +335,12 @@ def generate_launch_description():
             "gate_alt_margin": _f("gate_alt_margin"),
             "gate_pose_topic": "/mavros/local_position/pose",
             "gate_ground_settle_s": _f("ekf_pre_wait_s"),
+            # NEW (2026-10-06, VOXCONF). confirm_voxel / confirm_frame MUST be
+            # octomap's resolution / frame_id below — same source on purpose.
+            "confirm_hits":     _i("confirm_hits"),
+            "confirm_window_s": _f("confirm_window_s"),
+            "confirm_voxel":    _f("resolution"),
+            "confirm_frame":    "odom",
         }],
     )
 
@@ -424,6 +454,8 @@ def generate_launch_description():
             "safe_dis":            _f("safe_dis"),
             "hard_clearance":      _f("hard_clearance"),
             "guard_clearance":     _f("guard_clearance"),
+            "drone_radius":        _f("drone_radius"),      # SAFEDIST
+            "safety_margin":       _f("safety_margin"),     # SAFEDIST
             "collision_cost_tol":  _f("collision_cost_tol"),
             "planning_time_ahead": _f("planning_time_ahead"),
             "speed_margin_k":      _f("speed_margin_k"),
@@ -450,6 +482,7 @@ def generate_launch_description():
             "use_efficiency_ranking": _b("use_efficiency_ranking"),
             "candidate_log_path":  LaunchConfiguration("candidate_log_path"),
             "publish_markers":     _b("publish_markers"),
+            "keep_octomap":        _b("keep_octomap"),      # KEEPMAP
             "marker_frame":        "odom",
             "status_period_s":     _f("status_period_s"),
             "color_output":        _b("color_output"),

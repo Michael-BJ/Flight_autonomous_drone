@@ -67,6 +67,13 @@ _FORWARDED = [
     ("use_lookahead_guard", "true"),
     ("guard_clearance",     "0.60"),
     ("hard_clearance",      "0.55"),
+    # NEW (2026-09-21, SAFEDIST): airframe geometry -> hard floor under every
+    # centre-of-mass clearance above. 0.212 = half-diagonal of a 30x30 cm
+    # frame (0.15*sqrt(2)); 0.20 = demanded air gap frame->obstacle, so the
+    # centre of the drone never plans closer than 0.412 m to a known obstacle.
+    # Set drone_radius:=0.0 to switch the floor off (pre-2026-09-21 behaviour).
+    ("drone_radius",        "0.212"),
+    ("safety_margin",       "0.20"),
     ("collision_cost_tol",  "20.0"),
     ("max_plan_cost",       "50.0"),
     ("planning_time_ahead", "0.3"),
@@ -79,9 +86,9 @@ _FORWARDED = [
     ("replan_budget_s",     "1.0"),      # NEW (2026-09-14), same as fm_all
     ("w_feasibility",       "1000.0"),   # NEW (2026-09-15, WFEAS)
     ("flying_yaw_mode",     "home"),     # NEW (2026-09-15, YAWSMOOTH)
-    ("yaw_smooth_tau_s",    "1.0"),      # NEW (2026-09-15, YAWSMOOTH)
+    ("yaw_smooth_tau_s",    "1.5"),      # YAWFIX (2026-09-30): was 1.0
     ("yaw_rate_max_dps",    "30.0"),     # NEW (2026-09-15, YAWSMOOTH)
-    ("yaw_min_speed",       "0.15"),     # NEW (2026-09-15, YAWSMOOTH)
+    ("yaw_min_speed",       "0.05"),     # YAWFIX (2026-09-30): was 0.15
     ("yaw_max_offset_deg",  "60.0"),     # NEW (2026-09-15, YAWSMOOTH)
     ("yaw_deadband_deg",    "15.0"),     # NEW (2026-09-15, YAWSMOOTH)
     ("min_battery_pct",     "0.0"),
@@ -148,6 +155,15 @@ _FORWARDED = [
     ("rth_mode",            "trail"),   # NEW (2026-09-16, RTHREPLAN)
     ("rth_replan_timeout_s", "0.0"),
     ("publish_3d_map",      "false"),   # NEW (2026-09-16, RTHYAWMAP)
+    # NEW (2026-10-02, KEEPMAP): true = no octomap wipe at HOVER->FLYING nor
+    # after failed replans — the map (and record_map bag) keeps the takeoff
+    # and hover part. Only the pre-ARM wipe stays.
+    ("keep_octomap",        "false"),
+    # NEW (2026-10-06, VOXCONF): voxel confirmation in depth_to_pointcloud.
+    # 1 = off. 2 = a depth point reaches octomap only once its voxel was hit in
+    # 2 frames within confirm_window_s (see fm_real_barometer.launch.py).
+    ("confirm_hits",        "1"),
+    ("confirm_window_s",    "2.0"),
 ]
 
 # Camera arguments (identical to fm_all.launch.py — depth only, no TF).
@@ -261,7 +277,12 @@ def generate_launch_description():
               _stamp()],
              "/projected_map", "/octomap_binary", "/octomap_full",
              "/mavros/local_position/pose", "/mavros/local_position/odom",
-             "/tf", "/tf_static"],
+             "/tf", "/tf_static",
+             # NEW (2026-10-06, VOXCONF): what the voxel confirmation held
+             # back + its counters. Both exist only with confirm_hits >= 2
+             # (the recorder simply waits for them otherwise) and are small.
+             "/realsense/depth/points_rejected",
+             "/realsense/depth/confirm_status"],
         output="screen",
     )
 

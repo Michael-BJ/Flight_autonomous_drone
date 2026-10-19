@@ -732,3 +732,265 @@ cp command.txt.$T command.txt
 rm -f fm_deploy_barometer/octomap_view_node.py test/offline_test_mapview.py
 cd ~/drone_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select fm_deploy_barometer
 ```
+
+### 2026-09-30 13:4x：`fm_deploy` smooth yaw 修正（RETURN 機頭轉向 home + 預設值）；已 build（14:5x，見 SAFELOG 一節）
+
+**事件（9/23 17:19 `fm_all_barometer`，`flying_yaw_mode:=smooth`，至今唯一真的跑了 RETURN 的飛行）**：使用者看到 yaw 常像鎖住、返航時機頭沒對準 home。bag `~/flight_maps/map_20260923_171448/trajectory_171448.csv` 的 EKF yaw：RETURN 開始時機頭 27°、home 方向 −104°（差 131°）→ 機頭轉到 −43°（= 基準 + 60°）後**停住約 80 秒**（T+02:53 → T+04:13，離 home 方向 +59～+62°），接近 home、速度升到 0.16–0.29 m/s 才轉過去。去程約 100 秒機頭都在 82–86°，實際移動方向 13–115°。相機 FOV ±45° → 返航 80 秒行進方向不在畫面內（guard 全關）。
+
+**原因**（`_FlyingYawLockPublisher._smooth_yaw`）：
+
+1. 只有 setpoint 速度 > `yaw_min_speed`（0.15 m/s）才更新，否則維持目前機頭。9/23 的 setpoint 速度只有約 0.01–0.11 m/s（`[TRAJ] start v=`，v_max 0.3 的速度棘輪）→ 幾乎一直凍結。EKF 量到的速度比 setpoint 大（被位置誤差推著走），離線模擬不能拿它當 setpoint 速度（用它就重現不了 80 秒停住）
+2. 換段（RTHYAW 把 `_yaw_lock_ref` 改成 home 方位）時從目前機頭重新開始，但夾在 ±`yaw_max_offset_deg`（60°）→ 131° 被夾成 +60°，加上 1. → 停在離 home 60°
+3. 小問題：`_ref()` 在重置判斷之後才讀 → 換段那一個 tick 送「新基準 + 舊偏角」
+
+#### 程式修改（使用者同意）
+
+- 檔案：`src/fm_deploy/fm_deploy/fm_inference_real_node.py`、`src/fm_deploy/launch/fm_all.launch.py`、`fm_real.launch.py`、`src/fm_deploy_barometer/launch/fm_all_barometer.launch.py`、`fm_real_barometer.launch.py`、`src/fm_deploy_barometer/command.txt`（`fm_inference_base.py`、`recovery.py` 沒動）
+- 備份：同目錄 `*.bak-YAWFIX-20260930-134703`；本檔 `CLAUDE.md.bak-YAWFIX-20260930-134703`。搜尋 `YAWFIX`
+- `_FlyingYawLockPublisher`：基準改變（新的一段 = RETURN）時 `_off_cmd` 從目前機頭（不夾）開始、目標偏角 0 → 以 `yaw_rate_max_dps`（30°/s）轉向新基準，**不看速度**（懸停中也會轉）；`_ref()` 改在最前面讀（修 3.）。基準不變時輸出與舊版逐位相同；`home`、`velocity` 模式不變
+- 預設值（只影響 `flying_yaw_mode:=smooth`）：`yaw_smooth_tau_s` 1.0 → **1.5**、`yaw_min_speed` 0.15 → **0.05**（node 與四個 launch）。`flying_yaw_mode` 預設仍 `home`
+- `command.txt`：home/smooth 說明（含 RETURN 行為）、banner 預期值
+
+**參數選擇（離線模擬：真的 class + 合成 setpoint 串流，速度照 9/23 log 0.04–0.13 m/s、每秒 replan；PX4 yaw 速率假設 45°/s，`MPC_YAWRAUTO_MAX` 未讀）**：
+
+| 設定 | 跟上 45° 轉彎 | 跟上 90°（夾 60°） | 模型左右翻 ±25° 晃動 | ±40° | 高速 0.3–0.45 m/s 轉 45° |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 舊（min 0.15、tau 1.0） | 永不 | 永不 | 0°（凍結） | 0° | 1.6 s |
+| min 0.05、tau 1.0 | 2.4 s | 2.0 s | 41° | 65° | 1.6 s |
+| **min 0.05、tau 1.5（新預設）** | **3.6 s** | **3.3 s** | **27°** | 53° | 2.3 s |
+| min 0.05、tau 2.0 | 4.2 s | 4.2 s | 0° | 43° | 3.3 s |
+
+使用者要「不要太快也不要太久」（見 memory `smooth-yaw-preference`）。更穩：`yaw_smooth_tau_s:=2.0`；更快：1.0。
+
+**驗證（離線，不開 MAVROS、node 不 spin、不解鎖；腳本在 Claude scratchpad `test_yawfix.py`、`test_yawfix_node.py`）**：py_compile OK；pyflakes 只有舊的一條 f-string。
+
+- class 層 **18/18**：src 的 class 文字 = 已測 patch；基準不變時新舊輸出逐位相同（home/smooth/velocity × 15 組隨機，含 escape、HOVER、IGNORE_YAW）；RETURN 第一個 tick = 目前機頭（舊版跳 −131°）；轉速 ≤ 30°/s；RETURN 轉 ±131° / 179° / 60°，慢速或**懸停**都在 1.2–5.5 s 內對準 home 方向（舊版永不）；home 模式 RETURN 立即 = 新基準且新舊逐位相同；懸停 30 s 不漂；連續兩次換段；例外時仍送 setpoint
+- node 層 **13/13**（src 版 `FMInferenceRealNode`、`FMInferenceBaroNode`，`.onnx`、`dry_run`，最內層 publisher 換成 sink，沒有發佈）：預設讀到 tau 1.5 / min 0.05，banner `SMOOTH follow path | tau 1.5 s | ... | min speed 0.05 m/s`；RETURN 懸停中 3 s 轉 89–90°、第一個命令 = 目前機頭；鏈 `BaroZPublisher → _FlyingYawLockPublisher → Publisher`；`yaw_smooth_tau_s:=1.0 yaw_min_speed:=0.15` 仍可覆寫；預設模式仍 home
+- `fm_deploy_barometer/test/offline_test_recovery.py`（`PYTHONPATH` 指向 src 的 `fm_deploy`）35/35；四個 src launch `--show-args`：`flying_yaw_mode` home、`yaw_smooth_tau_s` 1.5、`yaw_min_speed` 0.05
+
+**build 前注意：`src` 裡有未 build 的 SAFEDIST**（2026-09-21 21:24，不是本對話寫的，本檔之前沒有紀錄；備份 `*.bak-SAFEDIST-20260921-212409`、`CLAUDE.md.bak-SAFEDIST-20260921-212409`）：`fm_inference_base.py`（新參數 `drone_radius`、`safety_margin`，下限 = 兩者和，套在所有中心距離門檻）、`fm_inference_real_node.py`（DONE log）、`recovery.py`（`rth_min_clearance` 只升不降）、兩個 barometer launch（預設 0.212 + 0.20 = 0.412 m）。9/22–9/23 飛的是沒有 SAFEDIST 的 install 版。`colcon build --packages-select fm_deploy fm_deploy_barometer` 會一起啟用。讀 diff 的結果（未實測）：預設值下所有門檻本來就 ≥ 0.412（`safe_dis` 0.8、`hard_clearance` 0.55、`guard_clearance` 0.60、`HARD_DIS_CENTER` 0.60、`POST_CHECK_FLOOR_CENTER` 0.45、`rth_min_clearance` 0.50）→ 不會被拉高；新增的是 banner、`[SAFEDIST]` 警告與計數（不 abort）、DONE 摘要。GPS 版 launch 沒傳這兩個參數 → 預設 0 = 關。
+
+**尚未做（需使用者同意）**：build（含 SAFEDIST，見上）；`dry_run:=true flying_yaw_mode:=smooth` 看 banner `tau 1.5 s ... min speed 0.05 m/s`；實飛（`flying_yaw_mode:=smooth rth_after_goal:=true rth_mode:=replan record_map:=true`，看去程機頭是否跟著路徑、返航時是否 ~4 s 內轉向 home，用 bag 的 yaw 驗證）；知識庫同步。
+
+**還原**（需使用者同意；或不還原：`yaw_smooth_tau_s:=1.0 yaw_min_speed:=0.15` 回舊參數，但換段邏輯要還原檔案才會回舊版；備份含 SAFEDIST，還原不會移除它）：
+
+```bash
+cd ~/drone_ws/src && T=bak-YAWFIX-20260930-134703
+for f in fm_deploy/fm_deploy/fm_inference_real_node.py fm_deploy/launch/fm_all.launch.py fm_deploy/launch/fm_real.launch.py \
+         fm_deploy_barometer/launch/fm_all_barometer.launch.py fm_deploy_barometer/launch/fm_real_barometer.launch.py \
+         fm_deploy_barometer/command.txt; do cp $f.$T $f; done
+cd ~/drone_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select fm_deploy fm_deploy_barometer
+```
+
+### 2026-09-30 14:5x：`fm_deploy` 安全距離即時 log（SAFELOG）+ build（含 YAWFIX、SAFEDIST）
+
+使用者要求：build safety distance（SAFEDIST），並在 log 顯示無人機離障礙物的距離何時低於安全距離。
+
+原本 SAFEDIST 只在 `_validate_planned_traj` 裡檢查（replan 成功到驗證那一步才會檢查；replan 失敗時、兩次 replan 之間都不檢查）。
+
+#### 程式修改（使用者同意）
+
+- 檔案：`src/fm_deploy/fm_deploy/fm_inference_real_node.py`（base 沒動）
+- 備份：`fm_inference_real_node.py.bak-SAFELOG-20260930-145230`；本檔 `CLAUDE.md.bak-SAFELOG-20260930-145230`。搜尋 `SAFELOG`
+- 新 10 Hz timer `_safedist_monitor`：OFFBOARD 任務中、已解鎖、ESDF 就緒、`_safety_floor` > 0 時，用與狀態列 `clear=` 相同的中心距離（ESDF + 0.30）比對 `drone_radius + safety_margin`
+  - 低於 → `[SAFEDIST] BELOW safety distance #N: centre clearance X m < 0.412 m | airframe gap ... | obstacle ahead/left/right/behind (相對機頭角度) | phase | pos | spd`（紅色 WARN，每段一次）
+  - 仍低於 → 每秒一行 `still below`（含本段最小值、持續秒數）
+  - 回到 ≥ 安全距離 + 0.05 m（滯後）→ `back above safety distance after X s (episode #N, min ...)`
+  - 任務結束（AUTO.LAND 交接、hard stop、上鎖）時自動結束該段
+  - 狀態列：低於時 `clear=0.39m<SAFE`（紅）
+  - DONE 摘要：`[REAL] Safety distance live monitor: min centre clearance ... | below 0.412 m: N time(s), X s total`
+  - **只有 log**：不改 setpoint、不 abort；例外全吞掉。`drone_radius` 與 `safety_margin` 都是 0（GPS 版 launch 預設）→ 不啟用
+- banner 多一行 `Safety log : 10 Hz, [SAFEDIST] BELOW / back above ...`
+
+**驗證（離線，不開 MAVROS、node 不 spin、不解鎖；Claude scratchpad `test_safelog.py`）**：py_compile OK；pyflakes 只有舊的一條 f-string。src 版 **25/25**（`FMInferenceRealNode`、`FMInferenceBaroNode`，假 ESDF：高於時無 log、進入只警告一次、滯後 0.05、仍低於含最小值、回到上方、第二段計數與方位、任務結束/上鎖時安靜、不 abort 且 `_stream_on` 不變、ESDF 壞掉不丟例外、狀態列 `<SAFE`、DONE 摘要、功能關閉時安靜）。
+
+#### Build（14:5x，使用者同意）
+
+- `colcon build --packages-select fm_deploy fm_deploy_barometer` 成功（排除 conda PATH，`which python3` = `/usr/bin/python3`，shebang `/usr/bin/python3`）
+- **這次 build 一起啟用了**：YAWFIX（上一節）、SAFEDIST（9/21，不是本對話寫的；`fm_all_barometer` / `fm_real_barometer` 預設 `drone_radius` 0.212 + `safety_margin` 0.20 = 0.412 m）、SAFELOG
+- install 與 src 逐檔相同（12 個 .py / launch）；用 install 版重跑：SAFELOG 25/25、YAWFIX node 13/13（確認 import 自 install）、`offline_test_recovery.py` 35/35；已安裝 launch `--show-args`：兩個 barometer launch `drone_radius` 0.212、`safety_margin` 0.20；四個 launch `yaw_smooth_tau_s` 1.5、`yaw_min_speed` 0.05
+- SAFEDIST 預設值下實際門檻不變（`safe_dis` 0.8、`hard_clearance` 0.55、`guard_clearance` 0.60、`HARD_DIS_CENTER` 0.60、`POST_CHECK_FLOOR_CENTER` 0.45 都 ≥ 0.412）。注意：launch 註解寫 `drone_radius:=0.0` 可關閉，但程式是兩者相加（0 + 0.20 仍啟用）；要完全關閉用 `drone_radius:=0.0 safety_margin:=0.0`
+- 0.212 假設機架 30×30 cm（含槳）；實機尺寸未確認
+
+**尚未做**：`dry_run:=true` 看 banner（`Safety dist`、`Safety log`、`Flying yaw : SMOOTH ... tau 1.5 s ... min speed 0.05`）；實飛；確認實機尺寸；知識庫同步。
+
+**還原**（需使用者同意）：只移除 SAFELOG → `cp src/fm_deploy/fm_deploy/fm_inference_real_node.py.bak-SAFELOG-20260930-145230 src/fm_deploy/fm_deploy/fm_inference_real_node.py` 再 build `fm_deploy fm_deploy_barometer`；YAWFIX 還原見上一節（YAWFIX 備份不含 SAFELOG）。
+
+### 2026-09-30 15:2x：修 `~/fastdds_jetson.xml`（MAVROS 資料傳不到其他 node）
+
+**事件**：室內 `fm_all_barometer`（14:59、15:01）MAVROS 4 秒內 `Got HEARTBEAT, connected`，但 `px4_sensor_reader` 一直 `Waiting for MAVROS connection...`、fm node `baro=0Hz` → 30 s `FCU connection timeout`。9/23 17:34、17:53、18:00 也一樣（8 次中 3 次）。
+
+**原因**：使用者為了讓筆電（Tailscale `100.97.193.67`）看 octomap，9/23 17:27 建了 `~/fastdds_jetson.xml` 並 `export FASTRTPS_DEFAULT_PROFILES_FILE`。檔內 `initialPeersList` 只有筆電 IP → **取代** FastDDS 預設的 multicast discovery（239.255.0.1）→ Jetson 上的 node 彼此找不到。驗證（不開 MAVROS）：同一台機器 `ros2 topic pub` → `echo`，舊檔 0/1、修正檔 1/1、無 profile 1/1。之前成功的 run 推測是沒 export 這個變數的終端機。另：沒有任何 node 在跑時看得到的外部 subscriber（`/px4/state`、`/projected_map`…，node 名稱無法解析）推測就是筆電。
+
+**修改（使用者同意）**：`~/fastdds_jetson.xml` 的 `initialPeersList` 改成 `239.255.0.1`（multicast，本機 discovery）+ `127.0.0.1` + `100.97.193.67`（筆電）。備份 `~/fastdds_jetson.xml.bak-DDSFIX-20260930-152007`。程式碼、PX4 參數沒動。
+
+**尚未做**：實機重跑（應看到 `px4_sensor_reader` CONNECTED）；筆電端 profile 要有 Jetson 的 Tailscale IP `100.95.214.15`、同一個 `ROS_DOMAIN_ID`（目前 0）。還原：`cp ~/fastdds_jetson.xml.bak-DDSFIX-20260930-152007 ~/fastdds_jetson.xml`。
+
+### 2026-10-02 10:1x：`fm_deploy` 新增 `keep_octomap`（起飛後不再清空 octomap）；已 build（10:3x）
+
+使用者要求（印尼文）：跑 `fm_all_barometer ... record_map:=true publish_3d_map:=true` 時，進 FLYING 前 octomap 會被整個清掉重來；要一個開關，讓「起飛 → HOVER → FLYING」都不刪 octomap，好看到這段的地圖。
+
+**原本清空 octomap 的地方**（real node 路徑；base 裡模擬用的 `run_sequence` 不受影響）：
+
+| # | 時機 | 位置 | `keep_octomap:=true` |
+| --- | --- | --- | --- |
+| a | 解鎖前設定 octomap 帶 | `run_sequence` 步驟 8 → `_configure_octomap_band`（real / baro 各有 override） | **照舊清**（還在地上；丟掉等 GPS/EKF 時累積的資料，例如站在飛機旁的人） |
+| b | HOVER 結束 → FLYING | `run_sequence` 步驟 13 | 不清、不等 1.5 s |
+| c | 連續 8 次 replan 失敗（`STUCK_MAP_RESET_FAILS`，冷卻 20 s），`wiping a likely STALE map` | base `_replan` → `_reset_stale_map` | 不清（FLYING、RETURN、dry run 都一樣） |
+
+9/30 17:52 的 bag（`map_20260930_175222`，`/octomap_binary`）三次掉到空地圖（48 bytes）：t=55.5 s (a)、75.2 s (b)、118.5 s (c)；同日 17:37、17:49 的 log 也都有 (b)、(c)。
+
+#### 程式修改（使用者要求）
+
+- 檔案：`src/fm_deploy/fm_deploy/fm_inference_real_node.py`（`fm_inference_base.py` 沒動）、`src/fm_deploy_barometer/launch/fm_all_barometer.launch.py`、`fm_real_barometer.launch.py`、`src/fm_deploy_barometer/command.txt`（第 8 節 banner 補一行、新第 9 節，印尼文）。GPS 版 launch（`fm_all` / `fm_real`）沒加這個參數
+- 備份：同目錄 `*.bak-KEEPMAP-20261002-101330`；本檔 `CLAUDE.md.bak-KEEPMAP-20261002-101330`。搜尋 `KEEPMAP`
+- 新 ROS 參數 `keep_octomap`（**預設 false = 舊行為**）；兩個 barometer launch 預設 `false`（`fm_all_barometer` 經 `_FORWARDED`）
+- true 時：(b) 跳過，HOVER 印 `octomap KEPT (keep_octomap:=true) — the map from takeoff + hover stays, no wipe`；(c) real node override `_reset_stale_map`：保留 base 的 20 s 冷卻與計數器歸零（`_replan_fail_count`、`_map_stall_fails`），只是不呼叫 reset service、不 sleep 1.5 s，log `[MAP] 8 replans failed — stale-map wipe SKIPPED #N (keep_octomap:=true), map kept`；`_fly_to_target` 每段開頭的提示改成 map KEPT；DONE 摘要多 `[REAL] Octomap kept for the whole flight (keep_octomap:=true): N stale-map wipe(s) skipped`；banner 多一行 `Octomap : ...`（兩種模式都印）
+- 代價：(c) 是清掉「相機再也看不到的假障礙 voxel」的復原機制；關掉後 replan 可能一直失敗 → 懸停到 `mission_timeout_s` → RTH / 降落（照舊）。對地圖上已知障礙的避撞沒有減少
+- 沒改：octomap 帶、guard、geofence、abort、RTH、yaw、PX4 參數
+
+**驗證（離線，不開 MAVROS、不解鎖、node 不 spin；`ROS_DOMAIN_ID=77` + `ROS_LOCALHOST_ONLY=1`、不載 FastDDS profile；最內層 setpoint publisher 換成 sink；octomap service 是假的、只記錄呼叫；腳本在 Claude scratchpad `test_keepmap.py`、`check_launch_keepmap.py`，未放進 repo）**：py_compile OK；pyflakes 只有舊的一條 f-string。src 版 **139/139**：
+
+- 真的 `run_sequence()`（PREFLIGHT → ARMING → TAKEOFF → HOVER → FLYING；MAVROS、感測器、起飛換成假的）× `FMInferenceRealNode`、`FMInferenceBaroNode` × 不給 / false / true：不給與 false 都 reset 2 次（解鎖前 + HOVER 後）、HOVER→FLYING 1.8 s、文字與舊版相同；true 只 reset 1 次（解鎖前）、HOVER→FLYING 0.30 s（= settle 時間）；都沒有發佈任何 setpoint
+- `_fly_to_target` 兩種模式的提示；`_reset_stale_map` 直接呼叫（冷卻、計數器、沒有 reset service 時不出錯）
+- 真的 base `_replan()` 失敗路徑（強制 `_initial_guesses` 失敗）：false 第 8 次呼叫 reset、true 第 8 次 SKIPPED 不呼叫；冷卻內再失敗 16 次不再動作；guard 開啟時兩種模式進 escape 的次數相同（前 3、後 3）
+- DONE 摘要（兩個 node）；用真的 rclpy logger 時 banner 與 skip log 不丟例外
+- launch（不執行，用 launch_ros 評估參數）19/19：`fm_real_barometer` 以 bool 傳 `keep_octomap` 給 fm node（預設 False、`true`/`True` → True），octomap_server 參數不變；`fm_all_barometer` 會轉發；兩個 src launch `--show-args` 有 `keep_octomap`（default false）
+- 回歸：`fm_deploy_barometer/test/offline_test_recovery.py`（`PYTHONPATH` 指向 src `fm_deploy`）35/35
+- 另在 domain 77 用假點雲實測 `octomap_saver_node`：`-p octomap_path:=…/x.bt`、`.ot` + `-p full:=true` 都能存檔；服務名稱 `/octomap_full`、`/octomap_binary`、`/octomap_server_unknown/reset`
+
+**Build（10:3x，使用者同意）**：build 前確認 install 與 src 完全相同（這次 build 只啟用 KEEPMAP）。`colcon build --packages-select fm_deploy fm_deploy_barometer` 成功（排除 conda PATH，`which python3` = `/usr/bin/python3`，shebang `/usr/bin/python3`）；install 內所有 .py 與 launch 與 src 逐檔相同（real node md5 `07b4ade5…`，base md5 `ba782e50…` 未變）。用 install 版重跑：`test_keepmap.py` 139/139（確認 import 自 install）、launch 檢查 19/19、`offline_test_recovery.py` 35/35；已安裝 `fm_all_barometer` / `fm_real_barometer` `--show-args` 有 `keep_octomap`（default false）。
+
+**尚未做**：dry run 看 banner `Octomap : KEPT ...`；實飛後用 bag 確認 `/octomap_binary` 只在解鎖前掉一次；知識庫同步。
+
+**還原**（需使用者同意；或不還原，不加 `keep_octomap:=true` 即舊行為）：
+
+```bash
+cd ~/drone_ws/src && T=bak-KEEPMAP-20261002-101330
+for f in fm_deploy/fm_deploy/fm_inference_real_node.py fm_deploy_barometer/launch/fm_all_barometer.launch.py \
+         fm_deploy_barometer/launch/fm_real_barometer.launch.py fm_deploy_barometer/command.txt; do cp $f.$T $f; done
+cd ~/drone_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select fm_deploy fm_deploy_barometer
+```
+
+### 2026-10-02 10:4x：Gemini 2 相機連線分析（唯讀；沒改程式、沒改參數）
+
+使用者問：戶外試飛時相機有沒有因為相機本身 / 線材不良出問題。查 `/var/log/kern.log`（7 月起，166 次開機）、`~/.ros/log`（138 個相機 container log、fm / bridge log）、`~/flight_maps` bag。
+
+- **相機一直是 USB 2.0**：kernel 215 次列舉全部 high-speed（480M），從沒 SuperSpeed；4 個 USB-A 口（`1-2.1`~`1-2.4`）都用過，都一樣。149 次 `usb connect type: USB2.0`，depth 只有 **1280×800 @ 10 fps**（USB3 可 30 fps）。同一組口 9/16 插 SanDisk 3.2 隨身碟是 SuperSpeed（`2-1.1`）→ 口沒問題，問題在相機端線材（推測 USB2 線或 SS 線對不良）/ Type-C 接頭方向。現況（10/02）`lsusb -t` 仍是 480M
+- **飛行中沒有斷線**：35 次 fm_deploy 實飛（9/13–9/30，有 TAKEOFF、非 dry run）期間沒有任何相機斷線或相機錯誤；相機 driver 的錯誤只出現在 7/28（安裝當天）。bag（9/16、9/23、9/30）`/octomap_binary` 更新中位間隔 0.10 s，最長 1.55 s，沒有 > 2 s 的中斷
+- **沒在用相機時的重新列舉**：8/1 之後 19 次，全部發生在沒有相機 session 執行時（多數在兩次執行之間，前一個 session 結束後 44 s~7 min），常見型態：`reset high-speed USB device` → 斷線 → 每 ~2 s 重新列舉數次；之前沒有 USB 錯誤（無 -71）。9/9、9/23 有換口（人為重插）；其餘原因**未確認**（搬動時接頭鬆動、或某程式 reset 裝置）
+- **戶外真正的問題是有效深度太少**：飛行中 bridge `[CAM] only N% valid`：中午（9/14、9/16）0–4%、9/15 早上 3–6%、9/23 17:15 14–17%、接近日落（9/23 17:46、9/30 17:36）≥ 20%。幀照常送達，內容無效 → 推測日光 / 空曠場景（天空、遠處地面），不是線材；未做對照測試。參考上限（幾何計算，fx=fy=609.8、相機水平、空曠地面）：bridge 的 valid（0.15–10 m）1.5 m 高 39%、1.8 m 36%、2.0 m 35%、3.0 m 27%；進 octomap 的 0.5–4 m 只有 21% / 16% / 12% / 0%（機頭下俯 5° 約 +6%）。上半部天空永遠無效，所以空曠場地 1.8 m 約 30–36% 已是最好，bridge 警告門檻 20%；即時看 `ros2 topic echo /realsense/depth/stats`（`valid_pct`、`hz`）
+- 相機沒啟動的 run：9/23 17:29–18:01、9/30 15:00–15:02 container 只有 SIGINT 一行 = DDSFIX 那個 FastDDS 問題（元件沒載入）。9/23 14:44–15:27 室內 dry run 的 `Timeout depth/ESDF`：相機有連上也有出幀，是 octomap_server 一直 `octree is empty`（原因未查），不是相機
+- 建議（未做）：換原廠 / 確認是 USB 3.x 的 Type-C 線、試著把相機端 Type-C 翻面、接頭加固定；換完確認 `lsusb -t` 相機在 Bus 02 5000M、相機 log `usb connect type: USB3.x`。之後預設 depth 可能變 30 fps，要注意 CPU 負載（`depth_to_pointcloud`、octomap）
+- 腳本在 Claude scratchpad（`usb_kern2.py`、`cam_sessions.py`、`flights_cam.py`，未放進 repo）。本檔備份 `CLAUDE.md.bak-CAMUSB-20261002-104338`
+
+### 2026-10-06 21:5x：`fm_deploy` 深度點雲新增「voxel 確認」濾波（`confirm_hits`，修 octomap 單次命中雜訊）；已 build（21:55）
+
+使用者回報（印尼文）：10/06 在很小的雨中試飛，octomap 在機頭前方出現很多小 voxel，問是否屬實、能否做專用濾波。之後要求**先做這個濾波**，其他項目（pose 逾時 watchdog、yaw 轉速限制、模式切換時記錄 ch5）暫緩。
+
+**背景（10/06 15:52–16:10 五次 `fm_all_barometer`，設定同 10/02 14:06 最佳飛行；bag `~/flight_maps/map_20261006_*` 的 `/octomap_full`）**：
+
+- 五次都沒到 6 m goal，左右擺 ±2.5–3.4 m，37–82 s 後駕駛接手（POSCTL）
+- planner 高度帶內的 occupied voxel 有 **61–71 % 只被命中一次**（log-odds ≤ 0.9），真正的障礙物是一塊飽和的實心 voxel；10/02 最佳飛行是 45 %
+- 這些 voxel 60–70 % 誕生在 3.3 m 以外、機頭 ±30° 內，連成一片（所以 octomap_server 的 `filter_speckles` 沒用），累積成牆把路擋住
+- 原因：octomap 第一次命中就判定 occupied（+0.85 > 0；Humble 2.3.1 沒有門檻參數）；`depth_to_pointcloud` 把超過 `max_range` 的點丟掉，所以沒有 ray 去清遠端；`keep_octomap:=true` 又關掉清圖
+- **不能證明是雨造成的**：9/30 傍晚（沒下雨、有清圖）每秒新生的未確認 voxel 一樣多或更多；深度影像沒有錄，雨與光線無法分開
+
+#### 程式修改（使用者同意）
+
+- 檔案：`src/fm_deploy/fm_deploy/depth_to_pointcloud_node.py`、`src/fm_deploy_barometer/launch/fm_real_barometer.launch.py`、`fm_all_barometer.launch.py`、`src/fm_deploy_barometer/command.txt`（新第 10 節，印尼文）；新檔 `src/fm_deploy/test/offline_test_voxconf.py`。GPS 版 launch（`fm_all` / `fm_real`）沒加參數；`fm_inference_base.py`（md5 `ba782e50…`）、`fm_inference_real_node.py`（md5 `07b4ade5…`）沒動
+- 備份：同目錄 `*.bak-VOXCONF-20261006-210324`；本檔 `CLAUDE.md.bak-VOXCONF-20261006-210324`。搜尋 `VOXCONF`
+- 新 launch 參數（兩個 barometer launch；`fm_all_barometer` 經 `_FORWARDED`）：`confirm_hits`（**預設 1 = 關 = 舊行為**）、`confirm_window_s`（預設 2.0）。節點另有 `confirm_voxel`（launch 直接給 `resolution`）、`confirm_frame`（`odom`）、`confirm_keep_s`（60）、`confirm_tf_max_age_s`（0.5）、`confirm_log_period_s`（10）
+- `confirm_hits:=2` 時：深度點先用**最新的** TF `odom ← camera_depth_frame` 轉到 odom，落在 octomap 同一個格網（`floor(p / 0.15)`）；該 voxel 在 `confirm_window_s` 內被 ≥ 2 個不同影格命中，這個點才送給 octomap。通過過的 voxel 持續被看到就一直接受（60 s 沒看到才要重新確認）。**只濾給 octomap 的點雲**；FM 模型讀的 `/realsense/depth/float32` 沒動
+- **一律 fail-open（只會少送點，不會讓點雲停掉）**：沒有 TF、TF 比 0.5 s 舊、任何例外 → 整個影格照舊全送並 WARN `[CONFIRM] filter bypassed ...`（每 5 s 一行）；視窗內沒有可比對的影格（啟動、暫停超過視窗）→ 該影格全送（`blind`，不警告）；≥ 5000 點的點雲連續 2 s 通過率 < 10 %（代表 pose 在跳）→ 全送。沒有點的影格也會登記，否則下一個雜訊點會被當成「暫停後第一格」放行
+- TF 用 tf2 `Buffer` + `TransformListener(buffer, None, spin_thread=True)`（自己的 node `transform_listener_impl_*` 與 thread）。濾波開啟時 `_to_pointcloud2` 改用 `array.array('B')` 填 `msg.data`（位元組相同；濾波關閉時維持原寫法）
+- 新 topic（只有濾波開啟才有）：`/realsense/depth/points_rejected`（被擋下的點，有人訂閱才發）、`/realsense/depth/confirm_status`（JSON 計數，1 Hz）；`record_map:=true` 的 bag 會一起錄這兩個。log 每 10 s 一行 `[CONFIRM] ... frames (Hz) | points in -> to octomap, held back (%) | accepted voxels | filter ms/frame | TF age | unfiltered frames`
+- 預設視窗選 2.0 s 的依據（用正式的 class 重播六次飛行〔10/02 + 10/06 五次〕由 `/octomap_full` 重建的命中紀錄，每次 octomap 插入算一格，約 6 Hz）：
+
+| 規則 | 單次命中 voxel 被擋掉 | 飽和（真障礙）voxel 保留 | 有路到 goal（37 個取樣時刻） |
+| --- | ---: | ---: | ---: |
+| 原始地圖 | – | – | 29 |
+| 2 次 / 1.0 s | 96 % | 98.4 % | 37 |
+| **2 次 / 2.0 s（預設）** | 96 % | **99.6 %** | 37 |
+| 2 次 / 3.0 s | 96 % | 99.8 % | 37 |
+| 3 次 / 1.0 s（**不要用**） | 97 % | 84.5 % | 37 |
+
+- 代價（已寫進 docstring 與 `command.txt`）：真障礙晚一點進地圖（持續看得到時晚一格 ≈ 0.1 s；重播中每個 voxel 中位數 0.3–1.1 s，障礙物前 3/10/25 個 voxel 進圖時無人機最多近 0.18 m）；相機只偶爾抓到的東西（細樹枝、電線、量程邊緣）要 2 s 內看到兩次才進圖；被擋下的點不會 ray-cast 清出 free 空間（端到端測試 free voxel 少 37 %；planner 把 unknown 當 free 不受影響，**但若再開 `use_lookahead_guard` / `blind_abort_s` 要先測**）；同一 voxel 2 s 內出現兩次的雜訊仍會通過
+
+**驗證（全部離線：不開 MAVROS、不解鎖、`ROS_DOMAIN_ID=77` + `ROS_LOCALHOST_ONLY=1`、不載 FastDDS profile）**：py_compile OK；pyflakes 乾淨。
+
+- `src/fm_deploy/test/offline_test_voxconf.py` **113/113**（src 版）：濾波 class 與逐 voxel 的參考實作在 6 組設定 × 160 格逐格比對（含不規則影格間隔、暫停、時鐘倒退）、格網 = octomap 的 `floor`、視窗 / keep / blind / 空影格、NaN / inf、記憶體上限；node 層（合成場景：地面 + 牆 + 每格 3 個單格雜訊塊，假 TF）：關閉時點雲與 v3 逐位元組相同且沒有 TF listener / 新 topic、懸停時場景 100 % 通過、0.54 m/s + 20°/s 時 99.4 %（最差一格 97.7 %）、雜訊塊通過 2–5 %、被接受的 voxel 100 % 落在真實地面 / 牆上（odom 轉換正確）、牆進入量程後晚一格出現、所有 fail-open 路徑、參數型別 / 夾限、高度 gate 照舊、listener thread 隨 shutdown 結束
+- 與備份檔 A/B（濾波關閉，60 格 × 4 組參數，含 NaN / inf / 空影格、gate 開關）：點雲、gate 訊息、publisher、subscription **全部相同**
+- **端到端（隔離 domain，真的 `static_transform_publisher` + `mavros_tf_broadcaster_node` + src 版 `depth_to_pointcloud_node` + 真的 `octomap_server_node`，假的 pose 30 Hz 與假深度 10 Hz：地面 + 牆 + 每格 3 個雜訊塊，22 s）**：
+
+| | 濾波關 | `confirm_hits:=2` |
+| --- | ---: | ---: |
+| 牆的 2D cell | 28 | 30 |
+| 雜訊的 2D cell | 146 | **4** |
+| 雜訊 voxel（3D） | 336 | **8** |
+| 牆的 voxel（帶內） | 293 | 373 |
+| free voxel | 33079 | 20770 |
+| 節點 CPU（22 s 情境） | 15.5 s | 8.1 s |
+
+- 每次 `_on_depth` 的時間（13k / 19k / 53k 點）：備份版 29.6 / 41.4 / 106.5 ms；新版濾波關 29.7 / 41.5 / 106.6 ms（= 備份版）；濾波開 **7.1 / 8.2 / 13.1 ms**
+- launch（不執行，用 launch API 評估）13/13：預設 `confirm_hits` 1（int）；7 個 node 共 141 個參數與備份 launch 相同（只多 4 個新參數）；錄製指令只多兩個 topic；`confirm_hits:=2`、`confirm_window_s:=1` 有傳到；`confirm_voxel` 永遠等於 octomap `resolution`；`confirm_hits:=2.0` 在啟動前就被 launch 拒絕。兩個 src launch `--show-args` 有新參數
+- 以 launch 的方式啟動節點（`-r __node:=depth_to_pointcloud` + `/**` 參數檔）：關 = 只有 `/depth_to_pointcloud` 與原本的 topic；開 = 多 `/transform_listener_impl_*`、`/tf`、`/tf_static` 與兩個新 topic。SIGINT / SIGTERM 後 0.3–0.4 s 自己結束（開、關都一樣；結束時那段 `ExternalShutdownException` traceback 是原本就有的）
+- 回歸：`fm_deploy_barometer/test/offline_test_recovery.py` 35/35、`offline_test_mapview.py` 50/50
+
+**開發中由端到端測試抓到、已修掉的三個問題**：
+
+1. TF listener 掛在節點自己的 executor 時，節點一忙「最新 TF」就舊到 2–3 s（rclpy 每輪每個 subscription 只取一筆，30 Hz 的 `/tf` 佇列追不上）→ 濾波一直 bypass。改成 listener 自己的 node + thread 後 TF age 1–20 ms、0 次 bypass
+2. `points @ R.T` 會進 OpenBLAS，5 條 worker thread 在影格之間空轉（22 s 情境 5 × 4.7 s CPU）→ 改成逐欄乘加，節點 CPU 30 s → 8 s
+3. **原本就有的效能問題**：`msg.data = points.tobytes()` 讓 rclpy 在 Python 裡逐 byte 檢查，13k 點 30 ms、44k 點 85 ms、76.8k 點 149 ms（超過影格間隔 100 ms → 障礙物佔滿畫面時節點反而跟不上）。濾波開啟時改用 `array.array('B')`（< 0.1 ms）。**濾波關閉時刻意保留原寫法**（預設路徑連時間都不變）；是否改成無條件，等使用者決定
+
+**同一對話的其他發現（唯讀，沒改程式）**：
+
+- 六個 bag 的 FLYING 段 octomap 只有 5.9–6.4 Hz：點雲時間戳間隔是 100 / 200 / 300 ms 的倍數（中位 104 ms、p90 ≈ 300 ms），代表影格在 octomap 之前就掉了，位置未確認（下次飛行看 `[CONFIRM] ... frames (Hz)` 就知道節點實際收到幾 Hz）
+- TF（`odom → base_link`）30 Hz，時間戳比收到時間早 6–9 ms；「最新 TF」與「點雲時間戳的 TF」在 4 m 處差中位 1 cm、p95 2–3 cm；偶有 300–550 ms 的 TF 空檔
+- launch configuration 是全域的：`fm_all_barometer ... max_range:=3.0`、`resolution:=…` 雖然不在 `_FORWARDED` 也會生效（已用 launch API 驗證）。`max_range:=3.0` 是不用濾波的替代方案（模擬中同樣開出路，但新障礙要近 1 m 才看到）
+- 10/02 14:00 那次失敗：launch 掛在筆電的終端機，連線中斷 → `ros2 launch` 被終端機輸出卡住 → `px4_sensor_reader` 凍結 90 s，fm node 用凍結的 pose 規劃，無人機實際漂了 17.7 m，駕駛用 Land 開關降落。**實飛請在 `tmux` 裡啟動 launch**（或把輸出導到檔案）。fm node 目前沒有 pose 逾時檢查（暫緩項目）
+- 10/02 14:08:28 離地 0.8 m 時的 AUTO.LAND 是遙控器模式開關（駕駛），不是 failsafe（log 特徵與 9/16 四次駕駛接手相同；未向駕駛 / ULog 確認）。`flying_yaw_mode home` 在 goal 掉頭與 LANDING 開始時 yaw setpoint 一次跳 171–172°（峰值 210–242°/s）
+
+**Build（10/06 21:55，使用者同意）**：build 前 install 與 src 只差這次的 3 個檔（node + 兩個 barometer launch）。`colcon build --packages-select fm_deploy fm_deploy_barometer` 成功（排除 conda PATH，`python3` = `/usr/bin/python3`，shebang `/usr/bin/python3`）；install 內 21 個 .py / launch 與 src 逐檔相同，base / real node md5 未變，`test/` 沒被安裝。對話在 build 後中斷，install 版的驗證於 10/07 11:2x 補做：`offline_test_voxconf.py` 113/113（確認 import 自 install）、兩個已安裝 launch `--show-args` 有 `confirm_hits`（1）與 `confirm_window_s`（2.0）、`offline_test_recovery.py` 35/35、`offline_test_mapview.py` 50/50。端到端（tf2 + octomap）只用 src 版跑過（檔案與 install 相同），build 後沒有重跑；當時的 scratchpad 腳本已不在。
+
+**尚未做（需使用者同意）**：`dry_run:=true confirm_hits:=2` 看 banner `voxel confirmation ON ...` 與 `[CONFIRM]` 行（frames Hz、held back %、bypassed 應為 0）；實飛（建議在 tmux 裡，`record_map:=true publish_3d_map:=true`），飛完用 bag 的 `/octomap_full`、`/realsense/depth/points_rejected` 確認擋掉的是雜訊不是障礙物；**濾波還沒用真實深度資料測過**（沒有錄深度 / 點雲，重播用的是 octomap 的命中紀錄）；`_BYPASS_MIN_POINTS` 5000 是估的，要用實飛的 `confirm_status` 檢查；暫緩項目（pose 逾時 watchdog、yaw 轉速限制、ch5 記錄）；知識庫同步。
+
+**還原**（需使用者同意；或不還原，不加 `confirm_hits:=2` 即舊行為）：
+
+```bash
+cd ~/drone_ws/src && T=bak-VOXCONF-20261006-210324
+for f in fm_deploy/fm_deploy/depth_to_pointcloud_node.py fm_deploy_barometer/launch/fm_real_barometer.launch.py \
+         fm_deploy_barometer/launch/fm_all_barometer.launch.py fm_deploy_barometer/command.txt; do cp $f.$T $f; done
+rm -f fm_deploy/test/offline_test_voxconf.py
+cd ~/drone_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select fm_deploy fm_deploy_barometer
+```
+
+### 2026-10-15 15:3x：MAVROS 2.16 namespace 變成 `/mavros/mavros/*` → 移除 launch 的 `namespace="mavros"`（使用者同意；已 build）
+
+**事件**：10/15 15:22–15:26 四次 `fm_all_barometer` 都是 MAVROS `Got HEARTBEAT, connected`，但 `px4_sensor_reader` 一直 `Waiting for MAVROS connection...`、TF `odom` 斷開（`depth_to_pointcloud` `[CONFIRM] filter bypassed ... two or more unconnected trees`）。
+
+**原因**：10/15 14:53 `apt upgrade`（`Requested-By: jeremy`，393 個套件，之後 15:19 Jetson 重開）把 MAVROS **2.14.0 → 2.16.0**（同時 mavros_msgs、mavros_extras 2.16.0、mavlink 2026.9.9、rmw / rclpy / rosidl 等）。MAVROS 2.15.1 起 plugin 子節點自己帶 UAS namespace（changelog：*fix duplicated namespace in launch files … defaulting the launch namespace to empty*），launch 裡 `namespace="mavros"` → topic / service 變成 `/mavros/mavros/state` 等，程式訂閱的 `/mavros/state` 沒有任何資料。DDS / `~/fastdds_jetson.xml` 沒問題（有沒有 profile 都一樣；pub/echo 測試正常）。
+
+**查證（只開 MAVROS，不解鎖、不寫參數）**：有 `namespace=mavros` → rclpy 訂閱 8 s 收到 0 筆、topic 全在 `/mavros/mavros/*`；沒有 namespace → `/mavros/state` 7 筆、`/mavros/imu/data` ~46 Hz。
+
+#### 程式修改
+
+- 檔案：`src/takeoff_land/launch/takeoff_land.launch.py`、`src/takeoff_land/launch/mavros_only.launch.py`、`src/takeoff_land_barometer/takeoff_land_barometer/launch_common.py`、`src/forward_move/launch/forward_move.launch.py`、`src/fm_deploy/launch/mavros_only.launch.py`（其他 launch 都是 include 這幾個：fm_all/fm_real、barometer 版、forward_move_barometer、vfh、gps_guard）
+- 每個檔只把 mavros_node 的 `namespace="mavros",` 換成註解。搜尋 `MAVNS`
+- 備份：同目錄 `*.bak-MAVNS-20261015-153704`；本檔 `CLAUDE.md.bak-MAVNS-20261015-153704`
+
+**Build（15:3x）**：build 前確認 install 與 src 只差這 5 個檔。`colcon build --packages-select takeoff_land takeoff_land_barometer forward_move fm_deploy` 成功（排除 conda PATH，`/usr/bin/python3`）；install 與 src 相同。
+
+**驗證（install 版 `ros2 launch takeoff_land mavros_only.launch.py`，只開 MAVROS，不解鎖）**：165 個 topic、0 個 `/mavros/mavros/*`；`/mavros/state`、`local_position/pose`、`altitude`、`battery`、`rc/in`、`gpsstatus/gps1/raw`、`home_position/home`、`setpoint_raw/local` 都在；service `/mavros/set_mode`、`/mavros/cmd/arming`、`/mavros/param/pull`、`/mavros/param/get_parameters`、`/mavros/param/set` 都在；`/mavros/state` 7 筆 / 8 s、IMU ~46 Hz；`ros2 param get /mavros/param` 讀到 `EKF2_HGT_REF` 0、`RC_MAP_KILL_SW` 11、`COM_RC_OVERRIDE` 3；plugin 參數有套用（`/mavros/local_position frame_id` = `map`，同 `px4_config.yaml`）。`/mavros/param/get` 不存在 —— 只是 `_get_px4_param_int` 的 MAVROS1 舊 fallback，主路徑 `get_parameters` 正常。8 個主要 launch `--show-args` 正常。測完 MAVROS 已關、`/dev/ttyACM0` 空閒。
+
+**注意**：這次升級也換了 rmw、rclpy、mavlink 等；**尚未做**：整套 `fm_all_barometer dry_run:=true` 確認 `px4_sensor_reader` CONNECTED、`Ground reference OK`、TF/octomap 正常；拆槳 Kill 測試；實飛；知識庫同步。15:27:19–15:27:47 Pixhawk 曾 USB 斷線又重新列舉（拔插或重開，原因未確認）。若之後 MAVROS 降回 ≤ 2.15.0，要把 namespace 加回去（還原備份）。
+
+**還原**（需使用者同意）：
+
+```bash
+cd ~/drone_ws/src && T=bak-MAVNS-20261015-153704
+for f in takeoff_land/launch/takeoff_land.launch.py takeoff_land/launch/mavros_only.launch.py \
+         takeoff_land_barometer/takeoff_land_barometer/launch_common.py forward_move/launch/forward_move.launch.py \
+         fm_deploy/launch/mavros_only.launch.py; do cp $f.$T $f; done
+cd ~/drone_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select takeoff_land takeoff_land_barometer forward_move fm_deploy
+```

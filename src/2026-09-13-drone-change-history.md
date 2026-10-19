@@ -21,7 +21,7 @@ This document lists every recorded change made to our drone:
 
 It also lists what was tried and then reverted, and what still has to be tested.
 
-- **Snapshot:** 2026-09-13, 17:13 (Jetson clock) for the onboard code up to 15:17, extended with the later entries in the timeline. PX4 parameters updated at 23:45 (section 3.6). The three `*_barometer` packages added at 22:47–23:14 are documented in `~/drone_ws/CLAUDE.md`, not here.
+- **Snapshot:** 2026-09-13, 17:13 (Jetson clock) for the onboard code up to 15:17, extended with the later entries in the timeline. PX4 parameters updated at 23:45 (section 3.6). `SDLOG_MODE` updated again on 2026-09-23 (section 3.7); other changes after 2026-09-13 (for example `EKF2_HGT_REF`, `EKF2_GPS_CTRL` on 2026-09-14) are not in this file. The three `*_barometer` packages added at 22:47–23:14 are documented in `~/drone_ws/CLAUDE.md`, not here. The H-Flow bus termination parameter (stored on the H-Flow, not on the Pixhawk) was set on 2026-10-18 (section 3.8). Pixhawk parameters for the H-Flow test mode were changed on 2026-10-18 at 22:14 (section 3.9). H-Flow stage 2 (the H-Flow becomes the height reference, optical flow fused) was set on 2026-10-19 at 00:22, Pixhawk rebooted at 00:26 (section 3.10). Optical flow fusion was turned off again on 2026-10-19 at 10:06 because the H-Flow flow values are too small (section 3.11).
 - **Time zone:** all times are local time (UTC+8).
 - **Evidence:** flight logs, git history, the change log on the Jetson, and the records of the sessions in which the changes were made. See section 10 for sources and gaps.
 
@@ -55,11 +55,12 @@ It also lists what was tried and then reverted, and what still has to be tested.
 | Horizontal speed limit | 1.5 m/s (`MPC_XY_VEL_ALL`) | unchanged (1.0 tried for one minute) |
 | Hover thrust / takeoff ramp | `MPC_THR_HOVER = 0.65`, `MPC_TKO_RAMP_T = 1.5` s. Were 0.5 / 3.0 | 2026-09-10 |
 | Kill → auto-disarm delay | 5 s (`COM_KILL_DISARM = 5`, kept on purpose) | unchanged |
-| Height reference | **GPS** (`EKF2_HGT_REF = 1`, `EKF2_GPS_CTRL = 7`). Switched to barometer and back on 2026-09-13. Read back unchanged at 23:32 | 2026-09-13 (reverted) |
-| Flight logging / GPS satellite info | `SDLOG_MODE = 1` (from boot), `GPS_SAT_INFO = 1`. Were 0 / 0. **Written and read back, but active only after the next Pixhawk reboot** | 2026-09-13 23:40 |
+| Height reference | **H-Flow range finder** (`EKF2_HGT_REF = 2`) in conditional mode (`EKF2_RNG_CTRL = 1`): used while below 5 m and slower than 2.0 m/s horizontally (to start using it: below 3.5 m and 1.4 m/s); otherwise PX4 falls back to the barometer. The barometer stays fused as the fallback (`EKF2_BARO_CTRL = 1`); GPS height fusion stays off (`EKF2_GPS_CTRL = 5`). Since 2026-10-19 00:26 (section 3.10), **not flown yet**. Before: barometer (`EKF2_HGT_REF = 0`), set by Michael on 2026-09-14 at 23:08 (recorded in `~/drone_ws/CLAUDE.md`); before that GPS (`1` / `7`; switched to barometer and back on 2026-09-13) | 2026-10-19 00:22 |
+| Flight logging / GPS satellite info | `SDLOG_MODE = 0` (from arming until disarm), `GPS_SAT_INFO = 1`. `SDLOG_MODE` was 1 (from boot) from 2026-09-13 to 2026-09-23. Both in effect | 2026-09-23 16:17 |
 | Onboard code | Kill-switch handling, "mode switch must be in Offboard" pre-arm check, GPS and ground-height pre-arm gates, octomap height-band fix, new `forward_move` package | 2026-09-13 |
 | Git | Everything after the V5 commit (2026-09-08 22:37) is **not committed** | — |
 | Jetson storage | System on a 1 TB NVMe SSD; old SD card kept as a fallback | 2026-09-08 |
+| Downward range finder + optical flow | Holybro H-Flow on CAN1, DroneCAN node 125, bus termination on (`CANNODE_TERM = 1`, stored on the H-Flow). **Height reference since 2026-10-19 (stage 2):** the estimator uses its range as the height reference (row above). **Optical flow fusion off since 2026-10-19 10:06** (`EKF2_OF_CTRL = 0`, section 3.11): hand tests showed that the flow and the H-Flow's own gyro reach the Pixhawk at only about 0.5–0.7 × the true values, so the horizontal velocity comes from GPS only again. Flow direction checked on 2026-10-19 (correct). Mounted 0.195 m below the flight controller. **Not flown yet**. Stage 1 (test mode, estimator ignored it) was on 2026-10-18 at 22:14 (section 3.9), stage 2 on 2026-10-19 at 00:22 (section 3.10) | 2026-10-19 10:06 |
 
 ---
 
@@ -89,7 +90,12 @@ It also lists what was tried and then reverted, and what still has to be tested.
 | 2026-09-13 ~12:50–13:45 | PX4 | Height reference GPS → barometer, GPS height fusion off, then **both reverted** | Reverted |
 | 2026-09-13 15:16 | Code | `fm_deploy` octomap height band made relative to the ground (fixes a false OFF-MAP abort) | Built, **not tested on the drone** |
 | 2026-09-13 21:56–22:02 | Code + model | `fm_deploy` planner model runs on the GPU with TensorRT; launch default switched to the `.engine`, automatic fallback to `.onnx` on CPU (4.2 f) | Built 22:04, **not tested on the drone** |
-| 2026-09-13 23:40 | PX4 | `GPS_SAT_INFO` 0 → 1 (per-satellite info), `SDLOG_MODE` 0 → 1 (log from boot) (section 3.6) | Written and read back; **takes effect only after a Pixhawk reboot** |
+| 2026-09-13 23:40 | PX4 | `GPS_SAT_INFO` 0 → 1 (per-satellite info), `SDLOG_MODE` 0 → 1 (log from boot) (section 3.6) | In effect after the 23:52 reboot. `SDLOG_MODE` set back on 2026-09-23 |
+| 2026-09-23 16:17 | PX4 + SD card | `SDLOG_MODE` 1 → 0 (log only from arming until disarm); 16 boot logs that were never armed deleted from the SD card (section 3.7) | In effect since the Pixhawk power cycle at about 17:05 |
+| 2026-10-18 21:38 | PX4 (on the H-Flow) | H-Flow on CAN1 confirmed online (node 125); its CAN bus termination `CANNODE_TERM` 0 → 1, saved on the H-Flow (section 3.8). Pixhawk parameters unchanged | In effect |
+| 2026-10-18 22:14 | PX4 | H-Flow **test mode**: `UAVCAN_SUB_RNG` 0 → 1, `UAVCAN_SUB_FLOW` 0 → 1, `UAVCAN_RNG_MIN` 0 → 0.08, `UAVCAN_RNG_MAX` 999 → 30; `EKF2_RNG_CTRL` 1 → 0 and `EKF2_OF_CTRL` 1 → 0 (temporary). Pixhawk rebooted at 22:14:56 (section 3.9) | Replaced by stage 2 on 2026-10-19 |
+| 2026-10-19 00:22 | PX4 | H-Flow **stage 2**: `EKF2_HGT_REF` 0 → 2, `EKF2_RNG_CTRL` 0 → 1, `EKF2_OF_CTRL` 0 → 1, `EKF2_RNG_POS_Z` and `EKF2_OF_POS_Z` 0 → 0.195, `EKF2_MIN_RNG` 0.01 → 0.325, `SENS_FLOW_MAXR` 8.0 → 7.4, `SENS_FLOW_MAXHGT` 100 → 30, `EKF2_RNG_A_VMAX` 1.0 → 2.0. Pixhawk rebooted at 00:26:46 (section 3.10) | In effect, except `EKF2_OF_CTRL` (back to 0 at 10:06). **Changes the height source of both workspaces**; not flown yet |
+| 2026-10-19 10:06 | PX4 | Optical flow fusion off: `EKF2_OF_CTRL` 1 → 0, because the H-Flow flow and gyro values reach the Pixhawk at only about 0.5–0.7 × the true values. The H-Flow stays the height reference. No reboot needed (section 3.11) | In effect |
 
 ---
 
@@ -271,6 +277,119 @@ What changes after the reboot:
 - `SDLOG_MODE = 1` (PX4 v1.17.0 `logger.cpp`): a log file starts at boot and stops at the first disarm. Every later arming starts a new file, as before. If the drone is never armed, the file runs until power-off. Logs get longer and larger, because the time on the ground is now included.
 - `GPS_SAT_INFO = 1`: in the QGC MAVLink Console, `listener satellite_info` shows each satellite and its signal strength. Compare with another receiver at the same place and time; a single reading cannot say "broken".
 
+### 3.7 2026-09-23 16:17 — logging only while armed again; boot logs deleted
+
+| Parameter | Before | After | Reason |
+| --- | --- | --- | --- |
+| `SDLOG_MODE` | 1 (log from boot until disarm) | **0** (log from arming until disarm) | A boot log that never sees an arming runs until power-off (about 170 MB per hour). From 2026-09-14 to 2026-09-23 the SD card collected 16 such logs (4.97 GB) with no flight in them |
+
+**Done by:** Claude, through a minimal MAVROS (`sys_status` + `param` plugins only, `ROS_DOMAIN_ID=73`), at the user's (Jeremy's) request. Written at 16:17:40 and read back after a full parameter pull (1150 parameters). The drone was not armed.
+
+**Took effect:** the Pixhawk was power-cycled at about 17:05 (not by Claude). No log started at that boot. All 7 logs from 17:07 to 17:55 start at arming (87 s to 3025 s after boot) and show `SDLOG_MODE = 0` in their start-up parameters.
+
+**Trade-off:** an attempt that is refused before arming leaves no flight log again. The reason is then only in the Jetson's `~/.ros/log/`. To study the time on the ground before takeoff, set it back to 1 for that session.
+
+**Logs deleted** (MAVLink FTP, one file at a time, file size checked before each delete; the `log_transfer` erase was not used because it clears the whole card):
+
+- `/fs/microsd/log/2026-09-14/`: `01_13_35.ulg`, `01_53_58.ulg`, `06_13_37.ulg`
+- `/fs/microsd/log/2026-09-15/`: `00_34_00.ulg`, `00_40_21.ulg`, `01_23_40.ulg`, `02_42_59.ulg`, `08_38_49.ulg`, `11_14_28.ulg`
+- `/fs/microsd/log/sess100/log100.ulg`
+- `/fs/microsd/log/2026-09-21/`: `12_23_46.ulg`, `14_13_29.ulg`
+- `/fs/microsd/log/2026-09-22/`: `03_19_17.ulg`, `06_21_59.ulg`, `12_09_23.ulg`
+- `/fs/microsd/log/2026-09-23/05_40_34.ulg`
+
+How they were picked: a log whose header time is 1–4 s after boot is a boot log. For each boot log only the first 400 KB and the last 2 MB were downloaded, and `vehicle_status` (`arming_state`, `armed_time`, `takeoff_time`) was read. With mode 1 a boot log stops at the first disarm, so a boot log whose last 40 s never show an arming was never armed.
+
+**Kept:** the 5 boot logs that contain a flight (`2026-09-14/03_13_48`, `2026-09-14/16_05_07`, `2026-09-15/01_24_16`, `2026-09-16/02_46_49`, `2026-09-16/04_41_06`); `2026-09-14/05_51_29` (armed for 1.4 s by the RC switch, no takeoff; used in the height-drift analysis, kept at the user's choice); every log that starts at arming.
+
+**Log numbers changed.** The number shown by QGC and `log_transfer` is the position in the sorted file list, so every log after a deleted one moved down. Old → new: 99 → 97, 100–104 → 98–102, 105 → 103, 106 → 104, 108 → 105, 109–120 → 106–117, 124 → 118, 125–132 → 119–126, 136 → 127, 137–142 → 128–133, 143 → 134, 144–151 → 135–142. Logs 0–96 keep their numbers; the 2026-09-23 afternoon logs are 143–149. The file path (UTC date and time) does not change.
+
+### 3.8 2026-10-18 21:38 — H-Flow CAN bus termination
+
+The Holybro H-Flow (downward range finder + optical flow, PX4 cannode firmware) is connected to CAN1. `uavcan status` on the Pixhawk shows one node: **125, `OK`, `OPERAT`**. This parameter lives **on the H-Flow**, not on the Pixhawk.
+
+| Parameter | Before | After | Reason |
+| --- | --- | --- | --- |
+| `CANNODE_TERM` (on the H-Flow, node 125) | 0 (termination off) | **1** (termination on) | A CAN bus needs a 120 Ω termination at both ends. The Pixhawk is one end; the H-Flow is the only other device, so it is the other end ("enable termination on the last node", PX4 DroneCAN docs) |
+
+**Done by:** Claude, at the user's (Jeremy's) request, through the PX4 MAVLink shell on `/dev/ttyACM0` (no MAVROS running; the drone was not armed): `uavcan param set 125 CANNODE_TERM 1`, then `uavcan param save 125`.
+
+**Took effect:** the shell printed `Failed to save parameters: 2`, but the Pixhawk console (`dmesg`) shows `save request for node 125 completed OK, restarting.` followed by `restart request for node 125 failed` (the H-Flow restarts at once and cannot answer). The H-Flow came back as `OK`, `OPERAT` and read back `CANNODE_TERM 1` at 21:39, so the value is stored on the H-Flow.
+
+**Bus before the change:** CAN1 had 0 new errors in 17 s while receiving about 463 frames/s; the 58920 errors in its counter were collected before the H-Flow was plugged in. CAN2 has nothing connected, so its error counter keeps rising (about 30/s); that is expected.
+
+**Not changed:** all Pixhawk parameters. PX4 still ignores the H-Flow data (`UAVCAN_SUB_RNG = 0`, `UAVCAN_SUB_FLOW = 0`; `distance_sensor` and `sensor_optical_flow` are never published). Mounting offsets `EKF2_OF_POS_*` and `EKF2_RNG_POS_*` are still 0, `EKF2_RNG_QLTY_T` is 1.0.
+
+### 3.9 2026-10-18 22:14 — H-Flow test mode (PX4 receives the data, the estimator ignores it)
+
+Stage 1 of 2. Goal: read the H-Flow range and optical flow to check their accuracy and direction **without changing how the drone flies**.
+
+| Parameter | Before | After | Reason |
+| --- | --- | --- | --- |
+| `UAVCAN_SUB_RNG` | 0 | **1** | PX4 subscribes to the H-Flow range measurements (publishes `distance_sensor`) |
+| `UAVCAN_SUB_FLOW` | 0 | **1** | PX4 subscribes to the H-Flow optical flow (publishes `sensor_optical_flow`, `vehicle_optical_flow`) |
+| `UAVCAN_RNG_MIN` | 0 | **0.08** | Holybro value (80 mm minimum range). In PX4 v1.17.0 `uavcan/sensors/rangefinder.cpp` a non-valid DroneCAN reading (too close / too far) gets quality −1 ("unknown"), which the estimator does **not** reject; only these limits reject it |
+| `UAVCAN_RNG_MAX` | 999 | **30** | Holybro value (30 m maximum range) |
+| `EKF2_RNG_CTRL` | 1 (conditional) | **0** (temporary) | Keep the estimator off the range finder while it is being checked. With 1, PX4 v1.17.0 makes the range finder the height reference during low, slow flight even when `EKF2_HGT_REF = 0` (`range_height_control.cpp` lines 140–206) |
+| `EKF2_OF_CTRL` | 1 | **0** (temporary) | Keep the estimator off the optical flow until its direction is checked |
+
+**Done by:** Claude, at the user's (Jeremy's) request and with explicit approval, through the PX4 MAVLink shell on `/dev/ttyACM0` (no MAVROS running; the drone was not armed). `param set` for each value, then `param save`, read back with `param show -a`. Pixhawk rebooted at 22:14:56 with the shell `reboot` command (`UAVCAN_SUB_*` need a reboot; `UAVCAN_RNG_MIN/MAX` are read when the driver starts). All six values read back the same after the reboot.
+
+**Took effect (22:15):** `distance_sensor` is published: `current_distance` 0.187 m, `min_distance` 0.08, `max_distance` 30, `signal_quality` 100. `DISTANCE_SENSOR` and `OPTICAL_FLOW_RAD` arrive on USB at about 10 Hz. Flow quality 90–100 with the drone standing still. The estimator does not use either: `cs_rng_hgt` False, `cs_opt_flow` False, `cs_baro_hgt` True. 10 s at rest: 18.5–18.8 cm.
+
+**Flight behaviour:** unchanged. The height still follows the barometer and the horizontal position still follows GPS, for both workspaces.
+
+**Next (stage 2, needs a new approval):** after the accuracy test, the flow direction check and measuring the mounting height: `EKF2_HGT_REF` 0 → 2 (range sensor), `EKF2_RNG_CTRL` 0 → 1 (conditional), `EKF2_OF_CTRL` 0 → 1, `EKF2_RNG_POS_Z` and `EKF2_OF_POS_Z` = distance from the flight controller down to the H-Flow lens, `EKF2_MIN_RNG` 0.01 → 0.313, `SENS_FLOW_MAXR` 8.0 → 7.4, `SENS_FLOW_MAXHGT` 100 → 30, then a reboot. The barometer stays on as the fallback (`EKF2_BARO_CTRL = 1`, the user's choice). This changes the height source for **both** workspaces: all of Michael's barometer packages use `baro_gain = 0` since 2026-09-15 and fly on the PX4 height, so they will fly on the H-Flow height too, without code changes. **Done on 2026-10-19 (section 3.10)** with the measured values (`EKF2_MIN_RNG` 0.325, offsets 0.195 m), plus `EKF2_RNG_A_VMAX` 2.0.
+
+### 3.10 2026-10-19 00:22 — H-Flow stage 2 (the estimator uses the H-Flow)
+
+Stage 2 of 2. Goal: at low height and low speed, the PX4 height comes from the H-Flow range instead of the barometer, and the H-Flow optical flow is fused together with GPS for the horizontal velocity.
+
+| Parameter | Before | After | Reason |
+| --- | --- | --- | --- |
+| `EKF2_HGT_REF` | 0 (barometer) | **2** (range sensor) | The H-Flow becomes the height reference. Needs a reboot |
+| `EKF2_RNG_CTRL` | 0 (temporary, section 3.9) | **1** (conditional) | Use the range finder only while low and slow: to start, below 0.7 × `EKF2_RNG_A_HMAX` (3.5 m) and 0.7 × `EKF2_RNG_A_VMAX` (1.4 m/s); once in use, until 5 m / 2.0 m/s. Outside these limits, or when the reading jumps (for example over a box), PX4 falls back to the barometer |
+| `EKF2_RNG_A_VMAX` | 1.0 | **2.0** (the maximum PX4 allows) | The box-circling (orbit) policy flies about 0.6 m/s in simulation. With 1.0 the H-Flow would be dropped above 1.0 m/s and only taken back below 0.7 m/s. With 2.0 both limits (2.0 and 1.4 m/s) are above the orbit program's own abort limit (1.5 m/s). Michael's programs fly at most 0.5 m/s |
+| `EKF2_OF_CTRL` | 0 (temporary) | **1** | Fuse the optical flow with the GPS velocity |
+| `EKF2_RNG_POS_Z`, `EKF2_OF_POS_Z` | 0 | **0.195** | The lens is 0.195 m below the flight controller (IMU): flight-controller centre 0.325 m above the floor, lens 0.125–0.135 m (tape measure, 2026-10-18). X and Y stay 0 (`EKF2_IMU_POS_*` are 0) |
+| `EKF2_MIN_RNG` | 0.01 | **0.325** | Flight-controller height above the ground when landed. PX4 v1.17.0 also resets the terrain to "current height − `EKF2_MIN_RNG`" at the moment it detects takeoff (`terrain_control.cpp`), so with 0.01 the whole flight would be about 0.34 m lower than commanded. Must be set together with `EKF2_HGT_REF` |
+| `SENS_FLOW_MAXR` | 8.0 | **7.4** | Holybro value (maximum measurable flow rate, rad/s) |
+| `SENS_FLOW_MAXHGT` | 100 | **30** | Holybro value (maximum height for the optical flow, m) |
+
+**Not changed, on purpose:** `EKF2_BARO_CTRL = 1` (barometer fused as the fallback, the user's choice), `EKF2_GPS_CTRL = 5` (no GPS height), `EKF2_RNG_A_HMAX = 5`, `SENS_FLOW_ROT = 0`, `SENS_FLOW_MINHGT = 0.08`.
+
+**Done by:** Claude, at the user's (Jeremy's) request with explicit approval on 2026-10-19 at 00:16 ("change what can be changed today; rebooting is fine"), through the PX4 MAVLink shell on `/dev/ttyACM0` (no MAVROS or ROS program running, port free; the drone was not armed). 00:21 read-only dump: all 1912 parameters identical to the 2026-10-18 23:28 dump. 00:22 `param set` for each value, then `param save`; read back with `param show -a`: exactly these 9 changed. Pixhawk rebooted at 00:26:46 with the shell `reboot` command. After the reboot all 9 read back the same. `CAL_BARO0_OFF` (211.66 → 206.22) and `CAL_BARO1_OFF` (410.09 → 402.77) changed by themselves at the reboot: PX4's automatic barometer calibration at boot (see section 10, "Gaps"), not set by us.
+
+**Took effect (00:27:30, 42 s after boot; drone standing indoors on a black box, no GPS fix):** in all three EKF2 instances (`EKF2_MULTI_IMU = 3`): `cs_rng_hgt` True and `cs_rng_terrain` False (= the H-Flow is the height reference), `cs_baro_hgt` True, `cs_opt_flow` True, `cs_rng_kin_consistent` True, `cs_rng_fault` False, `cs_in_air` False; GPS not in use (`cs_gnss_pos` False, indoors). `estimator_aid_src_rng_hgt`: `fused` True, `innovation_rejected` False, observation 0.374 m (= H-Flow reading 0.179 + 0.195) in all three. `estimator_aid_src_optical_flow`: `fused` True in all three. `vehicle_local_position`: `z` 0.03, `dist_bottom` 0.375, `dist_bottom_valid` False (expected: PX4 sets it only while the range finder estimates the terrain, which it does not do while it is the height reference). `vehicle_optical_flow`: `max_flow_rate` 7.4, `max_ground_distance` 30 (the new values are in use). The black surface makes the H-Flow read about 5 cm long; this is known (2026-10-18 test) and not corrected.
+
+**Flight behaviour:** changes for **both** workspaces. While low and slow, the PX4 height is the distance to the ground measured by the H-Flow (relative to the ground under the takeoff point), no longer the barometer. All barometer packages fly on the PX4 height: `baro_gain = 0` in `~/drone_ws`; in `~/drone_ws_jeremy` the gain is picked from the PX4 settings and is 0 as well. No code was changed. The user's copy prints two outdated lines before takeoff ("EKF height follows the BAROMETER", "falls back to the barometer"); the gain is still 0, so they do not matter.
+
+**Still to do before the first flight:** the optical-flow direction check (push forward → forward speed positive, push right → right speed positive). If the direction is wrong, `SENS_FLOW_ROT` must be changed and the Pixhawk rebooted (needs approval). Then a first hover in Position mode. Details in the knowledge base (`wiki/howto/downward-rangefinder-setup.md`). **Done on 2026-10-19 at 09:19: the direction is correct, but the flow values are too small, so the optical flow was turned off at 10:06 (section 3.11).**
+
+### 3.11 2026-10-19 10:06 — optical flow fusion off (the H-Flow flow values are too small)
+
+Hand tests with the propellers off, not armed and no MAVROS running (09:19–10:01, indoors, textured floor; listen-only logger on the Jetson) found:
+
+- **Direction: correct.** Pushing forward gives a positive forward speed, pushing right a positive right speed. Walking 2 m straight along a tape gave almost no sideways component (less than 1°), so the module is not mounted crooked. `SENS_FLOW_ROT = 0` is right.
+- **Range: accurate.** With the lens held at 1.00 m (tape measure) it read 1.044 m (102.7–106.8 cm).
+- **Flow speed: too small.** Three 2 m walks (taped, ±5 cm) came out as 1.42, 1.28 and 1.33 m (0.64–0.71 ×). The third walk was done with the arms stretched out, so the feet were out of the camera view; same result.
+- **The H-Flow's own gyro reads about half.** Compared with the Pixhawk's own gyro (`ATTITUDE`, 93 Hz) while tilting the drone: H-Flow gyro 0.52 × (pitch, R² 0.98) and 0.51 × (roll, R² 0.99); H-Flow flow 0.55 × and 0.63 ×. Shifting the time alignment by ±40 ms does not change the ratios. Because the flow and the H-Flow gyro are both too small, the check in the PX4 docs (flow ≈ H-Flow gyro during pure rotation; 1.00–1.10 here) does not catch this. Compare with the Pixhawk gyro instead.
+- **It comes from the H-Flow, not from the Pixhawk.** On the Pixhawk, `sensor_optical_flow` and `vehicle_optical_flow` both run at 55 Hz and every sample carries `integration_timespan_us = 15872` (two PAA3905 frames, 2 × 7936 µs); the Pixhawk passes the samples on without adding them up. The cause (H-Flow firmware or its own settings; `uavcan param list 125` shows `SENS_FLOW_RATE` 70, `SENS_FLOW_SCALE` 1.0, `IMU_GYRO_RATEMAX` 1000, `IMU_INTEG_RATE` 200) is not found yet.
+
+Effect: whenever the estimator relies on the flow, it thinks the drone moves about one third slower than it really does.
+
+| Parameter | Before | After | Reason |
+| --- | --- | --- | --- |
+| `EKF2_OF_CTRL` | 1 | **0** | Keep the estimator off the wrongly scaled optical flow. The horizontal velocity comes from GPS only, as before stage 2. The H-Flow stays the height reference (`EKF2_HGT_REF = 2`, `EKF2_RNG_CTRL = 1`) |
+
+**Done by:** Claude, at the user's (Jeremy's) request with explicit approval on 2026-10-19 at about 10:05, through the PX4 MAVLink shell on `/dev/ttyACM0` (no `mavros_node` running; the drone was not armed). 10:06 `param show -a` (1912 parameters), read-only queries, `param set EKF2_OF_CTRL 0` (`curr: 1 -> new: 0`), `param save`, read back 0 (saved), `param show -a` again: only this line differs. No reboot needed.
+
+**Took effect (10:06):** in all three EKF2 instances `cs_opt_flow` False, `cs_rng_hgt` True, `cs_rng_terrain` False, `cs_baro_hgt` True, `cs_rng_kin_consistent` True. GPS had a fix indoors at that time (`cs_gnss_pos`, `cs_gnss_vel` True).
+
+**Flight behaviour:** for both workspaces the horizontal estimate is GPS-only again; the height still comes from the H-Flow. Indoors, Position mode can now be armed only while GPS has a fix (with the flow on, the flow gave a horizontal estimate indoors).
+
+**Next:** find the cause on the H-Flow side, repeat the same tests (logger and analysis scripts in the knowledge base: `scripts/jetson-hflow-diag.py`, `scripts/analyze-hflow-diag.py`), and turn the flow back on only after they pass (needs approval). Raw data: `C:\Users\jerem\Downloads\log\hflow-tests-2026-10-19\` on Jeremy's PC.
+
 ---
 
 ## 4. Onboard software (`~/drone_ws` on the Jetson)
@@ -408,6 +527,7 @@ Also recommended: check all four ESCs (ES-40A, 40 A rating), re-calibrate the ES
 | 2026-09-09 13:27 (log 89) | `takeoff_land`, 36 s | 11.2 s on the ground, then climbed to ~1.9 m. Pilot took over with Position, then Land; landed and disarmed normally. Led to the 2026-09-10 takeoff change |
 | 2026-09-13 13:25 | `takeoff_land` with `max_ground_z:=5.0` (barometer height at the time) | Kill switch turned on about 1 s into takeoff → `AUTO.LAND` → disarmed 3 s later; the program did not re-arm. The kill logic worked on the real, armed drone. Whether propellers were fitted is not recorded |
 | 2026-09-13 15:05 | `fm_deploy` (`goal_dist:=3.0 target_alt:=2.0 max_alt_error:=0.5 dry_run:=false max_ground_z:=100.0 v_max:=0.3 descent_speed:=0.3`, GPS height) | Takeoff and hover normal. Aborted with OFF-MAP and landed in place → octomap fix (4.2 e). GPS height drifted about +0.9 m in ~40 s, so the real hover height was about 1.1 m instead of 2.0 m. `max_alt_error` cannot catch this, because the estimate itself was wrong |
+| 2026-10-19 09:19–10:01 | H-Flow hand tests, propellers off, not armed (listen-only logger on the Jetson) | Direction correct; range 1.044 m at 1.00 m; flow speed 0.64–0.71 × the truth (three taped 2 m walks); H-Flow gyro 0.51–0.52 × the Pixhawk gyro. Led to section 3.11 |
 
 ---
 
@@ -421,7 +541,8 @@ Also recommended: check all four ESCs (ES-40A, 40 A rating), re-calibrate the ES
 6. **Hardware:** confirm whether motors, ESCs and propellers were replaced; reduce vibration; check the centre of gravity and the motor thrust imbalance.
 7. **GPU inference:** TensorRT backend added and built on 2026-09-13 (4.2 f). Next: a `dry_run:=true` to confirm the GPU backend and replan times with real depth frames. torch and onnxruntime still cannot use the GPU.
 8. **Git:** all changes in section 4.2 and the `forward_move` package are uncommitted. The partner decides how to commit them.
-9. **Reboot the Pixhawk** so that `SDLOG_MODE = 1` and `GPS_SAT_INFO = 1` (section 3.6) take effect. Then check that a log starts at boot, and look at per-satellite signal strength with `listener satellite_info`.
+9. ~~Reboot the Pixhawk so that `SDLOG_MODE = 1` and `GPS_SAT_INFO = 1` (section 3.6) take effect.~~ Done: rebooted at 2026-09-13 23:52 and a log started at boot. `SDLOG_MODE` was set back to 0 on 2026-09-23 (section 3.7). The `listener satellite_info` check is not recorded here.
+10. **H-Flow (sections 3.8–3.11):** stage 1 (test mode) done on 2026-10-18 at 22:14, stage 2 on 2026-10-19 at 00:22, direction check on 2026-10-19 at 09:19 (correct). The flow values reach the Pixhawk too small (0.5–0.7 ×), so the optical flow was turned off at 10:06 (`EKF2_OF_CTRL = 0`); the H-Flow is still the height reference. Still to do: find the cause on the H-Flow side and repeat the tests, then turn the flow back on (`EKF2_OF_CTRL = 1`, needs approval); a first hover in Position mode, then check the flight log (`cs_rng_hgt` should stay True in the air). Range accuracy at flight height: one point measured (1.044 m at 1.00 m). Every Pixhawk parameter change needs approval. Steps are in the knowledge base (`wiki/howto/downward-rangefinder-setup.md`).
 
 ---
 
@@ -440,7 +561,7 @@ Also recommended: check all four ESCs (ES-40A, 40 A rating), re-calibrate the ES
 
 After restoring a file, rebuild the package (`colcon build --packages-select <package>`) and check that `install/` matches `src/`. The exact restore commands for the kill-switch and octomap changes are in `~/drone_ws/CLAUDE.md`. Restoring code on the drone needs the user's approval.
 
-**PX4 parameters:** write back the "Before" column of section 3. The mode-slot and kill-channel values only make sense together with the transmitter setup in section 3.3. For section 3.6: `SDLOG_MODE = 0`, `GPS_SAT_INFO = 0`, then reboot the Pixhawk.
+**PX4 parameters:** write back the "Before" column of section 3. The mode-slot and kill-channel values only make sense together with the transmitter setup in section 3.3. For section 3.6: `SDLOG_MODE = 0`, `GPS_SAT_INFO = 0`, then reboot the Pixhawk. For section 3.7: `SDLOG_MODE = 1`, then reboot the Pixhawk. The deleted logs cannot be restored (no copy was kept). For section 3.8 (on the H-Flow, in the MAVLink shell): `uavcan param set 125 CANNODE_TERM 0`, then `uavcan param save 125` (the H-Flow restarts). For section 3.9: `UAVCAN_SUB_RNG = 0`, `UAVCAN_SUB_FLOW = 0`, `UAVCAN_RNG_MIN = 0`, `UAVCAN_RNG_MAX = 999`, `EKF2_RNG_CTRL = 1`, `EKF2_OF_CTRL = 1`, then reboot the Pixhawk. For section 3.10 (back to the stage-1 test mode): `EKF2_HGT_REF = 0`, `EKF2_RNG_CTRL = 0`, `EKF2_OF_CTRL = 0`, `EKF2_RNG_POS_Z = 0`, `EKF2_OF_POS_Z = 0`, `EKF2_MIN_RNG = 0.01`, `SENS_FLOW_MAXR = 8.0`, `SENS_FLOW_MAXHGT = 100`, `EKF2_RNG_A_VMAX = 1.0`, then reboot the Pixhawk. `EKF2_RNG_CTRL` must go to 0 as well: with 1, PX4 makes the range finder the height reference at low height even when `EKF2_HGT_REF = 0`. For section 3.11: `EKF2_OF_CTRL = 1` (no reboot needed); do this only after the H-Flow flow values are fixed and re-tested.
 
 ---
 
@@ -453,6 +574,10 @@ After restoring a file, rebuild the package (`colcon build --packages-select <pa
 - `~/drone_ws/CLAUDE.md` and `~/drone_ws/src/INCIDENT_2026-08-27_gps_ekf.md` on the Jetson
 - Records of the Claude Code sessions on 2026-08-31, 2026-09-08/09 and 2026-09-10 (parameter-write scripts and their read-backs)
 - 2026-09-13 23:32 read-only parameter pull and 23:40 write + read-back of `SDLOG_MODE` / `GPS_SAT_INFO` (minimal MAVROS; section 3.6)
+- 2026-09-23 16:17 write + read-back of `SDLOG_MODE`, and partial downloads (first 400 KB, last 2 MB) of the boot logs to check for arming (section 3.7)
+- 2026-10-18 22:02 read-only parameter dump and 22:14 write + read-back (before and after the reboot) through the PX4 MAVLink shell; PX4 v1.17.0 source files `range_height_control.cpp`, `height_control.cpp`, `optical_flow_control.cpp`, `optical_flow_fusion.cpp`, `uavcan/sensors/rangefinder.cpp` (section 3.9)
+- 2026-10-19 00:21 read-only parameter dump, 00:22 write + read-back, 00:26 reboot and 00:27 read-back of the parameters and the EKF2 status through the PX4 MAVLink shell; PX4 v1.17.0 source files `range_height_control.cpp`, `terrain_control.cpp`, `MulticopterLandDetector.cpp` read on 2026-10-18 (section 3.10)
+- 2026-10-19 09:19–10:01 listen-only H-Flow logs on the Jetson (`jetson-hflow-live.py`, `jetson-hflow-diag.py`), and the 10:06 parameter dump, read-only queries, write and read-back through the PX4 MAVLink shell (section 3.11)
 - Knowledge-base notes (in Chinese): [[wiki/howto/offboard-flight-procedure]], [[wiki/howto/gps-height-drift-diagnosis]]
 
 **Gaps**

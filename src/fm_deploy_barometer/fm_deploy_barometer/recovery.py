@@ -117,6 +117,17 @@ class ReturnHomeRecoveryMixin:
         self._rth_max_terr  = float(g("rth_max_track_err"))
         self._rth_terr_s    = float(g("rth_track_err_s"))
         self._rth_min_clear = float(g("rth_min_clearance"))
+        # NEW (2026-09-21, SAFEDIST): the return leg must not accept less
+        # clearance than the airframe safety distance (drone_radius +
+        # safety_margin, declared in fm_inference_base and already applied to
+        # the outbound thresholds). Raise only — a larger rth_min_clearance
+        # asked for in the launch is kept.
+        _sd_floor = float(getattr(self, "_safety_floor", 0.0))
+        if _sd_floor > self._rth_min_clear:
+            self.get_logger().info(
+                f"{log_tag} rth_min_clearance {self._rth_min_clear:.2f} -> "
+                f"{_sd_floor:.2f} m (airframe safety distance)")
+            self._rth_min_clear = _sd_floor
         self._rth_block_s   = float(g("rth_block_s"))
         self._rth_yaw_rate  = math.radians(float(g("rth_yaw_rate_dps")))
         self._rth_extra_s   = float(g("rth_timeout_extra_s"))
