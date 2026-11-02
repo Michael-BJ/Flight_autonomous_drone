@@ -13,6 +13,10 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/takeoff_land_barometer.launch.py',
         ]),
+        # NEW (2026-10-19, HFLOWALT): MAVROS distance_sensor config for the H-Flow
+        ('share/' + package_name + '/config', [
+            'config/hflow_mavros.yaml',
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

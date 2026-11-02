@@ -61,6 +61,56 @@ def _i(name):
     return ParameterValue(LaunchConfiguration(name), value_type=int)
 
 
+def _s(name):
+    return ParameterValue(LaunchConfiguration(name), value_type=str)
+
+
+# NEW (2026-10-19, HFLOWALT): H-Flow altitude source. Shared with
+# fm_real_barometer.launch.py / fm_all_barometer.launch.py.
+def hflow_mavros_config():
+    """Path of config/hflow_mavros.yaml (enables /mavros/distance_sensor/hflow),
+    or None if the package share is missing (then MAVROS starts without it)."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        p = os.path.join(get_package_share_directory("takeoff_land_barometer"),
+                         "config", "hflow_mavros.yaml")
+        return p if os.path.isfile(p) else None
+    except Exception:
+        return None
+
+
+def hflow_arguments():
+    return [
+        DeclareLaunchArgument(
+            "hflow_mode", default_value="shadow",
+            description="off | shadow | hold. shadow = measure and log the H-Flow "
+                        "altitude next to the EKF one (flight unchanged). hold = "
+                        "altitude for takeoff / hover / watchdog = H-Flow, z setpoint "
+                        "= z_ekf + hflow_gain*(alt_target - alt_hflow). Needs "
+                        "baro_gain 0."),
+        DeclareLaunchArgument("hflow_gain", default_value="1.0"),
+        DeclareLaunchArgument(
+            "hflow_stale_abort_s", default_value="3.0",
+            description="hold: no valid H-Flow sample for this long -> AUTO.LAND "
+                        "(0 = never). Shorter gaps fly on the EKF z with the last "
+                        "H-Flow offset."),
+        DeclareLaunchArgument("hflow_max_cmd_offset", default_value="1.5"),
+        DeclareLaunchArgument(
+            "hflow_warn_diff", default_value="0.25",
+            description="Warn when |H-Flow alt - EKF alt| exceeds this (m)."),
+    ]
+
+
+def hflow_parameters():
+    return {
+        "hflow_mode":           _s("hflow_mode"),
+        "hflow_gain":           _f("hflow_gain"),
+        "hflow_stale_abort_s":  _f("hflow_stale_abort_s"),
+        "hflow_max_cmd_offset": _f("hflow_max_cmd_offset"),
+        "hflow_warn_diff":      _f("hflow_warn_diff"),
+    }
+
+
 def takeoff_land_arguments(max_ground_z="1000.0", max_ground_drift="0.5"):
     """The takeoff_land.launch.py arguments (same names) + the BARO ones.
     Shared with forward_move_barometer.launch.py."""
@@ -150,6 +200,8 @@ def takeoff_land_arguments(max_ground_z="1000.0", max_ground_drift="0.5"):
             description="Pre-flight: max peak-to-peak of the filtered barometric "
                         "altitude over ekf_window_s."),
         DeclareLaunchArgument("baro_min_rate_hz",    default_value="5.0"),
+        # ── H-Flow altitude (see hflow_altitude.py) ──── NEW (2026-10-19, HFLOWALT)
+        *hflow_arguments(),
         # ── Terminal monitoring ─────────────────────────────────────────────
         DeclareLaunchArgument(
             "status_period_s", default_value="2.0",
@@ -196,6 +248,7 @@ def takeoff_land_parameters():
         "baro_gate_std":       _f("baro_gate_std"),
         "baro_gate_drift":     _f("baro_gate_drift"),
         "baro_min_rate_hz":    _f("baro_min_rate_hz"),
+        **hflow_parameters(),  # NEW (2026-10-19, HFLOWALT)
         "status_period_s":     _f("status_period_s"),
         "color_output":        _b("color_output"),
         "use_ekf_stable":      True,
@@ -218,7 +271,7 @@ def mavros_and_reader():
             {"fcu_protocol":        "v2.0"},
             _MAVROS_CFG,
             _LOCAL_PLG,
-        ],
+        ] + ([hflow_mavros_config()] if hflow_mavros_config() else []),  # HFLOWALT
     )
     reader = TimerAction(
         period=10.0,

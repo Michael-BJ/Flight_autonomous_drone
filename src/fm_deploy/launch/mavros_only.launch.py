@@ -25,6 +25,18 @@ _MAVROS_CFG = "/opt/ros/humble/share/mavros/launch/px4_config.yaml"
 _LOCAL_PLG  = "/opt/ros/humble/share/mavros/launch/px4_pluginlists.yaml"
 
 
+def _hflow_cfg():
+    """NEW (2026-10-19, HFLOWALT): takeoff_land_barometer/config/hflow_mavros.yaml
+    enables /mavros/distance_sensor/hflow. Optional: missing package -> []."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        p = os.path.join(get_package_share_directory("takeoff_land_barometer"),
+                         "config", "hflow_mavros.yaml")
+        return [p] if os.path.isfile(p) else []
+    except Exception:
+        return []
+
+
 def _kill_stale(context):
     """Kill stale MAVROS/reader processes and clean FastRTPS shared memory."""
     import time, glob
@@ -68,7 +80,7 @@ def generate_launch_description():
             {"fcu_protocol":        "v2.0"},
             _MAVROS_CFG,
             _LOCAL_PLG,
-        ],
+        ] + _hflow_cfg(),   # NEW (2026-10-19, HFLOWALT)
     )
 
     # delay 10s so MAVROS has time to connect to PX4 before reader subscribes

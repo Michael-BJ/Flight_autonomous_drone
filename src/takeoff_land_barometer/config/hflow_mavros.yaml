@@ -1,0 +1,30 @@
+# NEW (2026-10-19, HFLOWALT): Holybro H-Flow range -> ROS.
+#
+# Loaded by launch_common.mavros_and_reader() and fm_deploy mavros_only.launch.py
+# AFTER px4_config.yaml / px4_pluginlists.yaml, so these values replace theirs.
+#
+# PX4 v1.17 streams DISTANCE_SENSOR at 10 Hz on the USB link (mavlink_main.cpp,
+# MAVLINK_MODE_CONFIG) with id = 0 (first distance_sensor instance) and
+# orientation 25 (PITCH_270, downward). The MAVROS distance_sensor plugin is on
+# the stock denylist; it is re-enabled here and publishes
+#     /mavros/distance_sensor/hflow   (sensor_msgs/Range, SensorDataQoS)
+# /mavros/altitude bottom_clearance is NOT usable: PX4 fills it only when
+# vehicle_local_position.dist_bottom_valid, which stayed false in every flight
+# on 2026-10-19.
+/**:
+  ros__parameters:
+    plugin_denylist:
+      - image_pub
+      - vibration
+      - rangefinder
+      - wheel_odometry
+
+/**/distance_sensor:
+  ros__parameters:
+    config: |
+      hflow:
+        id: 0
+        frame_id: "hflow"
+        orientation: PITCH_270
+        field_of_view: 0.0
+        send_tf: false

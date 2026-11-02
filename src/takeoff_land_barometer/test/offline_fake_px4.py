@@ -23,6 +23,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from mavros_msgs.msg import Altitude, PositionTarget, RCIn
+from sensor_msgs.msg import Imu, Range   # NEW (2026-10-19, HFLOWALT)
 from mavros_msgs.srv import CommandBool, ParamPull, SetMode
 from rcl_interfaces.msg import ParameterValue, ParameterType
 from rcl_interfaces.srv import GetParameters
@@ -64,6 +65,10 @@ class FakePX4(Node):
         self.p_sens  = self.create_publisher(String, "/px4/sensors", 10)
         self.p_alt   = self.create_publisher(Altitude, "/mavros/altitude", _BE)
         self.p_rc    = self.create_publisher(RCIn, "/mavros/rc/in", _BE)
+        # NEW (2026-10-19, HFLOWALT): H-Flow range (truth + 0.135 m on the ground)
+        # and IMU attitude (level). sc: hflow (default True), hflow_off_at.
+        self.p_rng   = self.create_publisher(Range, "/mavros/distance_sensor/hflow", _BE)
+        self.p_imu   = self.create_publisher(Imu, "/mavros/imu/data", _BE)
         self.create_subscription(PositionTarget, "/mavros/setpoint_raw/local", self._cb_sp, 10)
         self.create_service(CommandBool, "/mavros/cmd/arming", self._srv_arm)
         self.create_service(SetMode, "/mavros/set_mode", self._srv_mode)
@@ -191,3 +196,12 @@ class FakePX4(Node):
             self.p_alt.publish(m)
         rc = RCIn(); rc.channels = [1500] * 4 + [1499] + [1000] * 5 + [self.kill] + [1000] * 5
         self.p_rc.publish(rc)
+        # NEW (2026-10-19, HFLOWALT)
+        imu = Imu(); imu.orientation.w = 1.0
+        self.p_imu.publish(imu)
+        hflow_on = self.sc.get("hflow", True) and not (
+            self.sc.get("hflow_off_at") is not None and t >= self.sc["hflow_off_at"])
+        if hflow_on:
+            r = Range(); r.min_range = 0.08; r.max_range = 30.0
+            r.range = 0.135 + self.z_true + self.rng.normal(0, 0.005)
+            self.p_rng.publish(r)

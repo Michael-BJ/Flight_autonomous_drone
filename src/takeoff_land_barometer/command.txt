@@ -69,59 +69,66 @@ FIRST TEST (propellers OFF, then a low hover)
      the drone.
 
 ------------------------------------------------------------------------
-OPSIONAL: PX4 JUGA MEMAKAI BAROMETER (EKF2_HGT_REF 0 + EKF2_GPS_CTRL 5)
+OPTIONAL: PX4 ALSO USES THE BAROMETER (EKF2_HGT_REF 0 + EKF2_GPS_CTRL 5)
 ------------------------------------------------------------------------
 
-  Package ini bekerja TANPA mengubah parameter PX4. Tetapi PX4 sendiri masih
-  memegang tinggi GPS di EKF-nya (EKF2_HGT_REF 1, EKF2_GPS_CTRL 7), jadi
-  jitter cepat GPS masih masuk lewat kecepatan vertikal EKF, dan gate
-  pra-terbang tetap menolak kalau EKF z bergoyang cepat.
+  NOTE (2026-10-19): PX4 now uses the H-Flow range finder as its height
+  reference (EKF2_HGT_REF 2, barometer fallback). See ~/drone_ws/HISTORY.md.
+  This section describes the earlier barometer setup.
 
-  Lebih kuat: pindahkan referensi tinggi EKF ke barometer dan matikan tinggi
-  GPS. Teruji 2026-09-13 13:07 dan 13:15 (statis 90 s: EKF z 0.42 m p2p vs
-  GPS 1.7-2.7 m). Dikembalikan ke GPS pada 13:4x atas permintaan pemilik.
-  Package barometer tetap kompatibel: EKF z lalu ~ barometer, offset ~ tetap.
+  This package works WITHOUT changing PX4 parameters. But PX4 itself still
+  keeps GPS height in its EKF (EKF2_HGT_REF 1, EKF2_GPS_CTRL 7), so fast GPS
+  jitter still enters through the EKF vertical velocity, and the pre-flight
+  gate still refuses when EKF z shakes quickly.
 
-    EKF2_HGT_REF   1 (GPS)  -> 0 (Baro)   referensi tinggi EKF
-    EKF2_GPS_CTRL  7        -> 5          bit1 (tinggi GPS) OFF; posisi
-                                          horizontal (bit0) + kecepatan 3D
-                                          (bit2) tetap ON.  Keduanya WAJIB:
-                                          HGT_REF 0 saja tidak cukup (13:00,
-                                          z masih ikut GPS, corr +0.99).
+  Stronger: move the EKF height reference to the barometer and turn GPS
+  height off. Tested 2026-09-13 13:07 and 13:15 (90 s static: EKF z 0.42 m
+  p2p vs GPS 1.7-2.7 m). Reverted to GPS at 13:4x at the owner's request.
+  The barometer package stays compatible: EKF z is then ~ barometer, offset
+  ~ constant.
 
-  Syarat: drone DISARMED, baling-baling lepas, MAVROS sudah tersambung
-  (ros2 launch takeoff_land mavros_only.launch.py). Ini menulis ke flash
-  Pixhawk dan berlaku untuk SEMUA mode terbang, termasuk Position mode pilot.
+    EKF2_HGT_REF   1 (GPS)  -> 0 (Baro)   EKF height reference
+    EKF2_GPS_CTRL  7        -> 5          bit1 (GPS height) OFF; horizontal
+                                          position (bit0) + 3D velocity
+                                          (bit2) stay ON.  BOTH are REQUIRED:
+                                          HGT_REF 0 alone is not enough (13:00,
+                                          z still followed GPS, corr +0.99).
 
-  Cara 1 - lewat MAVROS (terminal kedua, setelah source):
+  Requirements: drone DISARMED, propellers off, MAVROS connected
+  (ros2 launch takeoff_land mavros_only.launch.py). This writes to the
+  Pixhawk flash and applies to ALL flight modes, including the pilot's
+  Position mode.
+
+  Option 1 - through MAVROS (second terminal, after sourcing):
     ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
     ros2 param set /mavros/param EKF2_HGT_REF 0
     ros2 param set /mavros/param EKF2_GPS_CTRL 5
-    # baca ulang dari flight controller untuk memastikan:
+    # read back from the flight controller to confirm:
     ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
-    ros2 param get /mavros/param EKF2_HGT_REF      # harus 0
-    ros2 param get /mavros/param EKF2_GPS_CTRL     # harus 5
-  Cara 2 - QGroundControl > Vehicle Setup > Parameters, cari EKF2_HGT_REF
-    dan EKF2_GPS_CTRL, ubah, lalu Tools > Reboot Vehicle.
+    ros2 param get /mavros/param EKF2_HGT_REF      # must be 0
+    ros2 param get /mavros/param EKF2_GPS_CTRL     # must be 5
+  Option 2 - QGroundControl > Vehicle Setup > Parameters, search for
+    EKF2_HGT_REF and EKF2_GPS_CTRL, change them, then Tools > Reboot Vehicle.
 
-  Setelah menulis: CABUT BATERAI + USB, nyalakan lagi Pixhawk (EKF init bersih),
-  tunggu >= 3 menit (barometer warm-up: -3.5 m dalam 2 menit pertama), baru
-  jalankan package ini. Catat: EKF z di tanah tidak akan 0 (13:15: -3.4 m),
-  itu normal untuk package ini (max_ground_z sudah 1000).
-  Rekam parameter sebelum/sesudah di CLAUDE.md dan knowledge base.
+  After writing: UNPLUG BATTERY + USB, power the Pixhawk again (clean EKF
+  init), wait >= 3 minutes (barometer warm-up: -3.5 m in the first 2
+  minutes), then run this package. Note: EKF z on the ground will not be 0
+  (13:15: -3.4 m); that is normal for this package (max_ground_z is 1000).
+  Record the before/after parameters in ~/drone_ws/HISTORY.md and the
+  knowledge base.
 
-  Efek pada program: tidak ada yang perlu diubah. balt= dan ekf_alt= akan
-  hampir sama; offset ekf-baro hampir konstan.
-  Catatan risiko: barometer hanyut dengan cuaca dan angin/matahari langsung
-  (tutup Pixhawk dengan busa), dan efek tanah (EKF2_GND_EFF_DZ 4.0,
-  EKF2_GND_MAX_HGT 0.5 sudah menangani <= 0.5 m).
+  Effect on the program: nothing needs to change. balt= and ekf_alt= will be
+  almost equal; the ekf-baro offset almost constant.
+  Risk notes: the barometer drifts with the weather and with wind / direct
+  sun (cover the Pixhawk with foam), and ground effect (EKF2_GND_EFF_DZ 4.0,
+  EKF2_GND_MAX_HGT 0.5 already handle <= 0.5 m).
 
-  KEMBALIKAN KE GPS (setelah GPS diganti, atau kalau ragu):
+  BACK TO GPS (after the GPS is replaced, or when in doubt):
     ros2 param set /mavros/param EKF2_HGT_REF 1
     ros2 param set /mavros/param EKF2_GPS_CTRL 7
     ros2 service call /mavros/param/pull mavros_msgs/srv/ParamPull "{force_pull: true}"
-    ros2 param get /mavros/param EKF2_HGT_REF      # harus 1
-    ros2 param get /mavros/param EKF2_GPS_CTRL     # harus 7
-    lalu cabut baterai + USB dan nyalakan lagi Pixhawk.
-  JANGAN pakai write_px4_params:=true di fm_deploy* (kelas induk simulasi
-  akan menulis EKF2_HGT_REF 1 kembali).
+    ros2 param get /mavros/param EKF2_HGT_REF      # must be 1
+    ros2 param get /mavros/param EKF2_GPS_CTRL     # must be 7
+    then unplug battery + USB and power the Pixhawk again.
+  DO NOT use write_px4_params:=true in fm_deploy* (the simulation parent
+  class writes EKF2_HGT_REF 1 back).

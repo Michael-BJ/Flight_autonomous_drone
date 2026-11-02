@@ -55,6 +55,17 @@ SIGNALS
     EKF z                        = /px4/sensors local_z (the same value the
                                    existing nodes fly on).
 
+H-FLOW (NEW 2026-10-19, HFLOWALT, see hflow_altitude.py)
+    hflow_mode = off | shadow | hold (default shadow).
+      shadow: the H-Flow altitude is measured, shown on the status line,
+              compared with the EKF altitude (warning above hflow_warn_diff)
+              and logged at 10 Hz to hflow_log_dir. The flight is unchanged.
+      hold:   the H-Flow altitude replaces the barometric/EKF one for
+              takeoff, hover, the altitude watchdog and the setpoint z
+              (z_ekf + hflow_gain * (alt_target - alt_hflow)); the ground
+              reference refuses to fly without a quiet H-Flow; losing it for
+              hflow_stale_abort_s aborts. Needs baro_gain 0 (one loop only).
+
 This module is deliberately free of any mission logic. BaroHoldMixin
 plugs it into TakeoffLandNode / ForwardMoveNode / FMInferenceRealNode
 by (1) wrapping the setpoint publisher so every PositionTarget gets its z
@@ -71,6 +82,12 @@ import numpy as np
 from mavros_msgs.msg import Altitude, PositionTarget
 from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
                        DurabilityPolicy)
+from sensor_msgs.msg import Imu, Range   # NEW (2026-10-19, HFLOWALT)
+
+from takeoff_land_barometer.hflow_altitude import (   # NEW (2026-10-19, HFLOWALT)
+    HFlowAltitudeEstimator, HFlowCsvLog)
+
+HFLOW_MODES = ("off", "shadow", "hold")   # NEW (2026-10-19, HFLOWALT)
 
 _ALT_QOS = QoSProfile(
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -322,8 +339,12 @@ class BaroZPublisher:
     def publish(self, msg):
         try:
             est = self._node._baro
+            # NEW (2026-10-19, HFLOWALT): hold mode closes the loop on the H-Flow
+            hold = bool(getattr(self._node, "_hflow_hold", False))
+            if hold:
+                est = self._node._hflow
             if (isinstance(msg, PositionTarget) and est.ready
-                    and est.gain > 0.0   # NEW (2026-09-15, GAIN0): gain 0 -> pass through
+                    and (hold or est.gain > 0.0)   # NEW (2026-09-15, GAIN0): gain 0 -> pass through
                     and not (msg.type_mask & PositionTarget.IGNORE_PZ)):
                 nominal = float(msg.position.z)
                 alt_target = nominal - float(self._node._ground_z)
@@ -423,6 +444,164 @@ class BaroHoldMixin:
             f"std<{self._ekf_gate_std:.2f}m | baro std<{self._baro_gate_std:.2f}m "
             f"spread<={self._baro_gate_drift:.2f}m rate>={self._baro_min_rate:.0f}Hz")
         self.get_logger().info("=" * 62)
+        self._hflow_init()   # NEW (2026-10-19, HFLOWALT)
+
+    # ── H-Flow altitude (NEW 2026-10-19, HFLOWALT) ────────────────────────
+    def _hflow_init(self):
+        tag = "[HFLOW]"
+        p = self.declare_parameter
+        p("hflow_mode",           "shadow")  # off | shadow | hold
+        p("hflow_topic",          "/mavros/distance_sensor/hflow")
+        p("hflow_imu_topic",      "/mavros/imu/data")
+        p("hflow_gain",           1.0)    # hold: loop gain on the H-Flow error
+        p("hflow_lever_z",        0.195)  # m, lens below the IMU (EKF2_RNG_POS_Z)
+        p("hflow_tau_s",          0.2)    # low-pass on the IMU height
+        p("hflow_glitch_m",       0.5)    # m; single-sample outlier reject
+        p("hflow_stale_s",        0.5)    # s without a valid sample -> EKF-HOLD
+        p("hflow_stale_abort_s",  3.0)    # hold: s in EKF-HOLD -> abort (0=never)
+        p("hflow_max_tilt_deg",   35.0)   # samples above this tilt are dropped
+        p("hflow_max_cmd_offset", 1.5)    # m; |z_sp - z_ekf| bound
+        p("hflow_blend_s",        1.0)    # s; fade the step after a gap
+        p("hflow_warn_diff",      0.25)   # m; |alt_hflow - alt_ekf| warning
+        p("hflow_gate_std",       0.03)   # m; pre-flight std of the filtered height
+        p("hflow_min_rate_hz",    5.0)    # Hz; pre-flight
+        p("hflow_log_dir",        "~/drone_ws/log/hflow")
+        g = lambda n: self.get_parameter(n).value  # noqa: E731
+
+        mode = str(g("hflow_mode")).strip().lower()
+        if mode not in HFLOW_MODES:
+            raise ValueError(f"hflow_mode={mode!r}: must be one of {HFLOW_MODES}")
+        if mode == "hold" and self._baro.gain > 0.0:
+            raise ValueError("hflow_mode=hold needs baro_gain=0 (two altitude "
+                             "loops on one setpoint)")
+        self._hflow_mode = mode
+        self._hflow_hold = (mode == "hold")
+        self._hflow = None
+        self._hflow_log = None
+        self._hflow_stale_abort_s = float(g("hflow_stale_abort_s"))
+        self._hflow_warn_diff = float(g("hflow_warn_diff"))
+        self._hflow_gate_std = float(g("hflow_gate_std"))
+        self._hflow_min_rate = float(g("hflow_min_rate_hz"))
+        self._hflow_t_warn = 0.0
+        if mode == "off":
+            self.get_logger().info(f"{tag} hflow_mode=off: H-Flow not used.")
+            return
+
+        self._hflow = HFlowAltitudeEstimator(
+            self._baro_ekf_z,
+            gain=float(g("hflow_gain")), lever_z=float(g("hflow_lever_z")),
+            tau_s=float(g("hflow_tau_s")), glitch_m=float(g("hflow_glitch_m")),
+            stale_s=float(g("hflow_stale_s")),
+            max_tilt_deg=float(g("hflow_max_tilt_deg")),
+            max_cmd_offset=float(g("hflow_max_cmd_offset")),
+            blend_s=float(g("hflow_blend_s")))
+        self.create_subscription(Range, str(g("hflow_topic")),
+                                 self._hflow.cb_range, _ALT_QOS)
+        self.create_subscription(Imu, str(g("hflow_imu_topic")),
+                                 self._hflow.cb_imu, _ALT_QOS)
+        self._hflow_log = HFlowCsvLog(str(g("hflow_log_dir")), self.get_name())
+        self.create_timer(0.1, self._hflow_tick)
+
+        self.get_logger().info("=" * 62)
+        if self._hflow_hold:
+            self.get_logger().warn(
+                f"{tag} hflow_mode=HOLD: altitude = H-Flow ({g('hflow_topic')}). "
+                f"z_sp = z_ekf + {self._hflow.gain:.2f}*(alt_target - alt_hflow), "
+                f"bounded +-{self._hflow.max_cmd_off:.1f} m. Takes off only with a "
+                f"quiet H-Flow on the ground; H-Flow lost for "
+                f"{self._hflow_stale_abort_s:.0f} s -> abort. TERRAIN FOLLOWING: "
+                "anything below the drone raises it.")
+        else:
+            self.get_logger().info(
+                f"{tag} hflow_mode=shadow: H-Flow altitude measured and logged "
+                "next to the EKF one; the flight is NOT changed.")
+        self.get_logger().info(
+            f"{tag} h = (range + {self._hflow.lever_z:.3f}) * cos(tilt), "
+            f"tilt > {math.degrees(self._hflow.max_tilt):.0f} deg dropped, "
+            f"warn if |alt_hflow - alt_ekf| > {self._hflow_warn_diff:.2f} m")
+        self.get_logger().info(
+            f"{tag} 10 Hz log: {self._hflow_log.path if self._hflow_log.ok else 'DISABLED (cannot write)'}")
+        self.get_logger().info("=" * 62)
+
+    def _hflow_ekf_alt(self):
+        est = self._hflow
+        if est is None or est.z_ground is None:
+            return None
+        return self._baro_ekf_z() - est.z_ground
+
+    def _hflow_tick(self):
+        """10 Hz: CSV row + shadow comparison warning. Never raises."""
+        try:
+            est = self._hflow
+            alt, mode = est.altitude()
+            r, tilt, h = est.snapshot()
+            ekf_alt = self._hflow_ekf_alt()
+            age = est.stale_for()
+            b = self._baro
+            baro_alt = (b._h_filt - b.h_ground
+                        if b.ready and b._h_filt is not None else None)
+            pub = self._pub_sp
+            if self._hflow_log is not None:
+                self._hflow_log.row((
+                    time.time(), getattr(self, "_phase_name", ""),
+                    int(bool(getattr(self, "_armed", False))),
+                    self._baro_ekf_z(), self._baro_ekf_vz(), ekf_alt,
+                    r, tilt, h, alt if est.ready else None, mode,
+                    age if math.isfinite(age) else None, baro_alt,
+                    self._baro_alt(), getattr(pub, "last_nominal", None),
+                    getattr(pub, "last_sent", None)))
+            now = time.time()
+            if (est.ready and mode == est.MODE_HFLOW and ekf_alt is not None
+                    and abs(alt - ekf_alt) > self._hflow_warn_diff
+                    and now - self._hflow_t_warn >= 5.0):
+                self._hflow_t_warn = now
+                self.get_logger().warn(
+                    f"[HFLOW] H-Flow alt {alt:.2f} m vs EKF alt {ekf_alt:.2f} m "
+                    f"(diff {alt - ekf_alt:+.2f} m) — "
+                    + ("flying on the H-Flow" if self._hflow_hold
+                       else "shadow: the flight still uses the EKF"))
+        except Exception:
+            pass
+
+    def _alt_status_part(self):
+        """Status-line field of the altitude the mission flies on."""
+        if getattr(self, "_hflow_hold", False):
+            alt, mode = self._hflow.altitude()
+            return f"halt={alt:5.2f}m({mode})"
+        alt, mode = self._baro.altitude()
+        return f"balt={alt:5.2f}m({mode})"
+
+    def _hflow_status_part(self):
+        """Status-line field of the H-Flow (None when off)."""
+        est = getattr(self, "_hflow", None)
+        if est is None:
+            return None
+        red = self._c("red") if hasattr(self, "_c") else ""
+        rst = self._c("reset") if hasattr(self, "_c") else ""
+        st = est.stale_for()
+        if not math.isfinite(st):
+            return f"hflow={red}NO DATA{rst}"
+        rate = f"{est.rate_hz():.0f}Hz"
+        if st > est.stale_s:
+            return f"hflow={red}STALE {st:.1f}s{rst}"
+        if not est.ready:
+            _, _, h = est.snapshot()
+            return f"hflow=h{h:.2f}m {rate}"
+        alt, _ = est.altitude()
+        ekf_alt = self._hflow_ekf_alt()
+        d = "" if ekf_alt is None else f" d{alt - ekf_alt:+.2f}"
+        return f"hflow={alt:5.2f}m{d} {rate}"
+
+    # ── hold: start the controlled descent from the H-Flow altitude ───────
+    def _controlled_descent(self, from_z, *args, **kwargs):
+        """NEW (2026-10-19, HFLOWALT): the inherited descent walks a NOMINAL
+        setpoint down from from_z (fm passes the live EKF z). In hold mode the
+        nominal altitude must be the H-Flow one, otherwise the first rewritten
+        setpoint jumps by the EKF/H-Flow difference."""
+        if getattr(self, "_hflow_hold", False) and self._hflow.ready:
+            alt, _ = self._hflow.altitude()
+            from_z = float(self._ground_z) + alt
+        return super()._controlled_descent(from_z, *args, **kwargs)
 
     # ── accessors that differ between the node families ───────────────────
     def _baro_ekf_z(self):
@@ -451,7 +630,12 @@ class BaroHoldMixin:
 
     def _baro_alt(self):
         """Altitude above the take-off point (m) from the estimator."""
+        if getattr(self, "_hflow_hold", False):   # NEW (2026-10-19, HFLOWALT)
+            return self._hflow.altitude()[0]
         return self._baro.altitude()[0]
+
+    def _alt_source_name(self):   # NEW (2026-10-19, HFLOWALT)
+        return "H-Flow" if getattr(self, "_hflow_hold", False) else "barometric"
 
     # ── pre-flight ground reference (replaces _wait_ekf_stable) ───────────
     def _wait_ekf_stable(self, tol=0.08, stable_dur=5.0, timeout=60.0,
@@ -523,6 +707,18 @@ class BaroHoldMixin:
             elif bs["spread"] > self._baro_gate_drift:
                 problem = (f"baro drifting {bs['spread']:.2f}m over {win_s:.0f}s "
                            f"(need <={self._baro_gate_drift}m)")
+            elif getattr(self, "_hflow_hold", False) and (   # NEW (2026-10-19, HFLOWALT)
+                    self._hflow.rate_hz() < self._hflow_min_rate):
+                problem = (f"H-Flow rate {self._hflow.rate_hz():.1f} Hz on "
+                           f"{self.get_parameter('hflow_topic').value} "
+                           f"(need >= {self._hflow_min_rate:.0f}; hflow_mode=hold)")
+            elif getattr(self, "_hflow_hold", False) and (
+                    (self._hflow.window_stats(win_s) or {}).get("std", 1e9)
+                    > self._hflow_gate_std):
+                hs_ = self._hflow.window_stats(win_s)
+                problem = (f"H-Flow jitter std="
+                           f"{(hs_ or {}).get('std', float('nan')):.3f}m "
+                           f"(need <{self._hflow_gate_std}m; hflow_mode=hold)")
             else:
                 win = np.asarray(z_hist[-n_win:])
                 z_std, z_pp, z_mean = float(win.std()), float(win.max() - win.min()), float(win.mean())
@@ -548,6 +744,7 @@ class BaroHoldMixin:
                         f"{bs['raw_std']:.3f}) | EKF ground_z={z_ground:.3f}m "
                         f"(std={float(win.std()):.3f}, spread={float(win.max()-win.min()):.2f}m) "
                         f"| offset ekf-baro={z_ground - h_ground:+.2f}m")
+                    self._hflow_set_ground(win_s, z_ground)   # NEW (2026-10-19, HFLOWALT)
                     return z_ground
             else:
                 stable_start = None
@@ -575,9 +772,41 @@ class BaroHoldMixin:
         self.get_logger().error("=" * 62)
         return None
 
+    def _hflow_set_ground(self, win_s, z_ground):
+        """NEW (2026-10-19, HFLOWALT): H-Flow ground level, taken in the same
+        window as the barometer/EKF ones. Hold mode only gets here with a
+        quiet H-Flow (checked in the loop above); shadow mode just warns."""
+        est = getattr(self, "_hflow", None)
+        if est is None:
+            return
+        hs = est.window_stats(win_s)
+        if hs is None:
+            self.get_logger().warn(
+                "[HFLOW] no H-Flow data on the ground: shadow log runs without "
+                "an H-Flow altitude (is /mavros/distance_sensor/hflow published?)")
+            return
+        est.set_ground(hs["mean"], z_ground)
+        r, tilt, _ = est.snapshot()
+        self.get_logger().info(
+            f"[HFLOW] Ground reference OK. h_ground={hs['mean']:.3f}m "
+            f"(range {r if r is None else round(r, 3)} m, tilt "
+            f"{tilt if tilt is None else round(tilt, 1)} deg, std={hs['std']:.3f}, "
+            f"spread={hs['spread']:.3f}m, {est.rate_hz():.0f} Hz)")
+        if hs["mean"] > 0.6:
+            self.get_logger().warn(
+                f"[HFLOW] h_ground={hs['mean']:.2f} m is high for a drone on the "
+                "ground (expected ~0.33 m): something under the sensor?")
+
     # ── barometer health during the mission ───────────────────────────────
     def _baro_health_problem(self):
         """None while the barometer is usable, else the abort reason."""
+        # NEW (2026-10-19, HFLOWALT): in hold mode the H-Flow is the altitude
+        if (getattr(self, "_hflow_hold", False) and self._hflow.ready
+                and self._hflow_stale_abort_s > 0.0):
+            s = self._hflow.stale_for()
+            if s > self._hflow_stale_abort_s:
+                return (f"H-FLOW ALTITUDE LOST for {s:.1f}s (no valid range "
+                        f"sample; limit {self._hflow_stale_abort_s:.0f}s)")
         if self._baro_stale_abort_s <= 0.0:
             return None
         s = self._baro.stale_for()

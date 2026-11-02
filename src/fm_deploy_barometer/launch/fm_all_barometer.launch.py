@@ -137,6 +137,12 @@ _FORWARDED = [
     ("baro_gate_drift",        "0.30"),
     ("baro_min_rate_hz",       "5.0"),
     ("band_drift_margin",      "0.5"),
+    # NEW (2026-10-19, HFLOWALT): H-Flow altitude (off | shadow | hold)
+    ("hflow_mode",             "shadow"),
+    ("hflow_gain",             "1.0"),
+    ("hflow_stale_abort_s",    "3.0"),
+    ("hflow_max_cmd_offset",   "1.5"),
+    ("hflow_warn_diff",        "0.25"),
     # BARO: return recovery
     ("rth_enabled",         "true"),
     ("rth_speed",           "0.3"),

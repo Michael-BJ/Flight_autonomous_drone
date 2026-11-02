@@ -4,11 +4,11 @@ source ~/drone_ws/install/setup.bash
 export ROS_DOMAIN_ID=0
 export ROS_LOCALHOST_ONLY=0
 export FASTRTPS_DEFAULT_PROFILES_FILE=~/fastdds_jetson.xml
-ls -l ~/fastdds_jetson.xml    # harus ADA — kalau "No such file", buat dulu (perintah cat > ... EOF sebelumnya)
+ls -l ~/fastdds_jetson.xml    # must EXIST — if "No such file", create it first (the cat > ... EOF command)
 
 
 ros2 launch fm_deploy_barometer fm_all_barometer.launch.py \
-    goal_dist:=6.0 target_alt:=1.5 v_max:=0.5 \
+    goal_dist:=6.0 target_alt:=1 v_max:=0.5 \
     replan_period:=1.0 planning_time_ahead:=0.3 w_feasibility:=1000.0 \
     max_alt_error:=0.7 baro_gain:=0.0 \
     use_lookahead_guard:=false use_speed_limit:=false \
@@ -20,187 +20,191 @@ ros2 launch fm_deploy_barometer fm_all_barometer.launch.py \
     dry_run:=false
 
 
-ls -l ~/fastdds_jetson.xml            # file harus ada (buat pakai perintah cat > ... EOF di pesan sebelumnya)
-grep '<address>' ~/fastdds_jetson.xml # harus 100.97.193.67
+ls -l ~/fastdds_jetson.xml            # the file must exist (create it with the cat > ... EOF command)
+grep '<address>' ~/fastdds_jetson.xml # must include 100.97.193.67 (laptop, Tailscale)
+
+# Run inside tmux for real flights (a stalled SSH/VS Code terminal froze the
+# pose stream in flight on 2026-10-02).
 
 
-
-# dry_run:=true  -> TIDAK arming, TIDAK mengirim setpoint. Kamera, octomap,
-#                   TensorRT dan replan tetap jalan penuh (aman di darat).
-# dry_run:=false -> terbang sungguhan. Perintahnya sama persis.
+# dry_run:=true  -> does NOT arm, does NOT send setpoints. Camera, octomap,
+#                   TensorRT and replanning still run in full (safe on the ground).
+# dry_run:=false -> real flight. Otherwise the command is identical.
 
 
 ============================================================
-PENJELASAN PARAMETER
+PARAMETER REFERENCE
 ============================================================
-Kolom "default" = nilai bawaan fm_all_barometer.launch.py.
+The "default" column = the default in fm_all_barometer.launch.py.
 
 
-1. MISI & GEOMETRI
+1. MISSION & GEOMETRY
 ------------------------------------------------------------
 goal_dist:=6.0            default 5.0
-    Jarak goal DI DEPAN home, pada arah hidung saat arming (home frame).
-    Pasangannya goal_lat (0 = lurus, + = geser kiri). Geofence depan 10 m,
-    jadi 6 m masih di dalam pagar.
+    Goal distance AHEAD of home, along the nose direction at arming
+    (home frame). Paired with goal_lat (0 = straight, + = shift left).
+    The forward geofence is 10 m, so 6 m is still inside the fence.
 
 target_alt:=2.0           default 2.0
-    Tinggi jelajah DI ATAS TITIK LEPAS LANDAS (ground_z), bukan AMSL.
-    Jangan di bawah 2.0 m: pita octomap hidup di frame EKF yang hanyut;
-    di bawah itu pantulan tanah masuk ke pita dan planner berhenti bergerak.
+    Cruise height ABOVE THE TAKEOFF POINT (ground_z), not AMSL.
+    Do not go below 2.0 m: the octomap band lives in the drifting EKF
+    frame; below that, ground returns enter the band and the planner
+    stops moving.
 
 v_max:=0.3                default 0.5
-    Kecepatan maksimum yang dipakai optimizer. Kalau puncak trajektori
-    melebihi nilai ini, seluruh durasi trajektori diperpanjang dengan
-    faktor k -> lihat baris log "[TRAJ] ... scale k=". k sehat 1.0-1.2.
+    Maximum speed used by the optimizer. If the trajectory peak exceeds
+    it, the whole trajectory duration is stretched by a factor k -> see
+    the log line "[TRAJ] ... scale k=". A healthy k is 1.0-1.2.
 
 
-2. PERENCANA (PLANNER)
+2. PLANNER
 ------------------------------------------------------------
 replan_period:=2.0        default 1.0
-    Jarak waktu antar perencanaan ulang. Guard yang membatalkan trajektori
-    memicu replan lebih cepat (jeda minimum 0.3 s).
-    CATATAN: uji 9/15 menunjukkan w_feasibility=1000 + replan 2.0 s adalah
-    kombinasi terburuk (45% waktu diam, 0.18 m/s) karena trajektori habis
-    lalu drone menunggu jadwal berikutnya. Dengan replan 1.0 s -> 0.49 m/s.
-    Penerbangan 9/16 memakai 2.0 dan tercatat spd 0.17-0.25 padahal
-    v_max 0.30. Pertimbangkan replan_period:=1.0 setelah yaw terbukti benar.
+    Time between replans. A guard that cancels the trajectory triggers
+    an earlier replan (minimum gap 0.3 s).
+    NOTE: the 9/15 test showed w_feasibility=1000 + replan 2.0 s is the
+    worst combination (45% of the time stopped, 0.18 m/s) because the
+    trajectory runs out and the drone waits for the next replan. With
+    replan 1.0 s -> 0.49 m/s. The 9/16 flights used 2.0 and logged
+    spd 0.17-0.25 with v_max 0.30. Prefer replan_period:=1.0.
 
 planning_time_ahead:=0.3  default 0.3
-    Setpoint diambil dari titik trajektori 0.3 detik DI DEPAN posisi
-    sekarang, untuk menutup keterlambatan komputasi. Terlalu besar ->
-    drone melaju melebihi v_max (uji 9/15: ahead 0.6 -> 0.64 m/s saat
-    v_max 0.5).
+    The setpoint is taken from the trajectory point 0.3 s AHEAD of now,
+    to cover the computation delay. Too large -> the drone flies faster
+    than v_max (9/15 test: ahead 0.6 -> 0.64 m/s with v_max 0.5).
 
 w_feasibility:=1000.0     default 1000.0
-    Bobot pelanggaran kecepatan pada biaya MINCO. Dengan bobot lama (1.0)
-    optimizer merencanakan 2-3x v_max, lalu diperlambat faktor k, dan
-    kecepatan awal ikut dibagi k pada replan berikutnya -> drone nyaris
-    diam (kasus 9/15). Kembali ke perilaku lama: w_feasibility:=1.0.
+    Weight of the speed violation in the MINCO cost. With the old weight
+    (1.0) the optimizer planned 2-3x v_max, the trajectory was slowed by
+    k, and the start velocity was divided by k again at the next replan
+    -> the drone almost stood still (9/15). Old behaviour:
+    w_feasibility:=1.0.
 
 max_plan_cost:=1000       default 50
-    Gerbang mutu: trajektori dengan biaya total di atas nilai ini ditolak.
-    1000 = PRAKTIS DIMATIKAN; solusi yang meledak secara numerik (lintasan
-    mengayun liar) ikut diterima.
+    Quality gate: trajectories with a total cost above this are rejected.
+    1000 = EFFECTIVELY OFF; numerically exploding solutions (wildly
+    swinging paths) are accepted too.
 
 
-3. PENGAMAN YANG DIMATIKAN
+3. GUARDS THAT ARE TURNED OFF
 ------------------------------------------------------------
-use_lookahead_guard:=false   default true (di launch ini)
-    Mematikan guard yang memeriksa ke depan sepanjang trajektori dan
-    membatalkannya kalau menembus daerah belum terpetakan / terlalu rapat.
+use_lookahead_guard:=false   default true (in this launch)
+    Turns off the guard that checks ahead along the trajectory and
+    cancels it when it enters unmapped space or gets too close.
 
 use_speed_limit:=false       default true
-    Mematikan pembatas kecepatan sebanding jarak bebas
-    (kecepatan = margin / k, lantai 0.15 m/s). Tanpa ini drone bisa tiba
-    di rintangan terlalu cepat untuk direm.
+    Turns off the clearance-proportional speed limit
+    (speed = margin / k, floor 0.15 m/s). Without it the drone can reach
+    an obstacle too fast to brake.
 
 blind_abort_s:=0             default 10 s
-    Mematikan abort OFF-MAP (sel drone di octomap tidak diketahui selama
-    N detik). Abort inilah yang menggagalkan penerbangan 9/13 15:05.
+    Turns off the OFF-MAP abort (the drone's octomap cell unknown for
+    N seconds). This abort is what ended the 9/13 15:05 flight.
 
 stuck_abort_s:=0             default 60 s
-    Mematikan abort "tidak ada kemajuan menuju goal selama N detik".
+    Turns off the "no progress toward the goal for N seconds" abort.
 
 gate_enabled:=false          default true
-    Mematikan gerbang ketinggian di depth_to_pointcloud (normalnya frame
-    depth hanya diproses saat drone berada di pita tinggi tertentu).
-    BENAR untuk dimatikan: 9/14 gate salah menghitung ground_z
-    (3.58 -> 0.00) dan menutup sepanjang penerbangan, peta kosong total.
+    Turns off the height gate in depth_to_pointcloud (normally depth
+    frames are processed only while the drone is in a height band).
+    RIGHT to turn off: on 9/14 the gate computed ground_z wrongly
+    (3.58 -> 0.00) and stayed closed the whole flight; the map was empty.
 
-YANG MASIH AKTIF meski semuanya di atas mati:
-    post-check keras _validate_planned_traj (0.55 m dari titik pusat) dan
-    collision_cost_tol tetap menolak trajektori yang menabrak rintangan
-    YANG ADA DI PETA. Jadi bukan nol proteksi. Yang hilang adalah
-    perlindungan terhadap rintangan yang BELUM terpetakan dan semua reaksi
-    darurat. Di lapangan terbuka depth Gemini 2 sering hanya 0-4% piksel
-    valid sehingga peta memang kosong -> praktis terbang tanpa
-    penghindaran. HANYA untuk lapangan kosong.
+STILL ACTIVE even with all of the above off:
+    the hard post-check in _validate_planned_traj (0.55 m from the
+    centre) and collision_cost_tol still reject trajectories that hit
+    obstacles THAT ARE IN THE MAP. So it is not zero protection. What is
+    lost is protection against obstacles NOT YET MAPPED and all emergency
+    reactions. In an open field the Gemini 2 depth often has only 0-4%
+    valid pixels, so the map is empty -> effectively flying without
+    avoidance. OPEN FIELDS ONLY.
 
-Tetap aktif tanpa perlu ditulis: geofence (fwd 10 / back 3 / lat +-4 m,
-radius abort 12 m), batas tinggi, baterai, deteksi disarm tak terduga,
-RC override, dan Kill switch (SwF / CH11).
+Always active without writing anything: geofence (fwd 10 / back 3 /
+lat +-4 m, abort radius 12 m), height limits, battery, unexpected-disarm
+detection, RC override, and the kill switch (SwF / CH11).
 
 
-4. KETINGGIAN
+4. HEIGHT
 ------------------------------------------------------------
 max_alt_error:=0.7        default 0.5
-    Simpangan tinggi dari target_alt yang memicu ABORT -> mendarat di
-    tempat. Penerbangan 9/15 09:42 kena abort ini.
+    Deviation from target_alt that triggers an ABORT -> land in place.
+    The 9/15 09:42 flight hit this abort.
 
 baro_gain:=0.0            default 0.0
-    0 = TIDAK ADA loop koreksi barometer. Setpoint z = ground_z +
-    target_alt, dan semua pemeriksaan tinggi memakai EKF z.
-    Alasannya: PX4 sendiri sudah memakai barometer (EKF2_HGT_REF=0,
-    EKF2_GPS_CTRL=5 sejak 9/14), jadi gain 0.7 berarti barometer yang sama
-    dipakai dua kali dan drone bergoyang naik-turun.
-    Kembali ke perilaku lama: baro_gain:=0.7.
-    Gerbang barometer sebelum lepas landas dan abort "barometer stream
-    lost" (5 s) TETAP aktif walau gain 0.
+    0 = NO barometer correction loop. Setpoint z = ground_z +
+    target_alt, and every height check uses the EKF z.
+    Reason: PX4 itself provides the height (barometer since 9/14,
+    H-Flow range finder with barometer fallback since 10/19), so a gain
+    of 0.7 used the same sensor twice and the drone bobbed up and down.
+    Old behaviour: baro_gain:=0.7.
+    The pre-takeoff barometer gate and the "barometer stream lost" abort
+    (5 s) STAY active even with gain 0.
 
 
-5. BATAS MISI
+5. MISSION LIMITS
 ------------------------------------------------------------
-min_battery_pct:=20       default 0 (mati)
-    Di bawah nilai ini -> ABORT. Baterai tergolong "masalah kendaraan"
-    sehingga drone MENDARAT DI TEMPAT, BUKAN pulang. Inilah sebab 9/16
-    12:14 mendarat di goal meski rth_after_goal:=true.
-    BERANGKAT DENGAN BATERAI PENUH; jangan turunkan nilai ini ke 5.
+min_battery_pct:=20       default 0 (off)
+    Below this -> ABORT. Battery counts as a "vehicle problem", so the
+    drone LANDS IN PLACE, it does NOT return. This is why the 9/16 12:14
+    flight landed at the goal even with rth_after_goal:=true.
+    TAKE OFF WITH A FULL BATTERY; do not lower this to 5.
 
 mission_timeout_s:=120    default 180
-    Batas waktu fase FLYING. Berbeda dari baterai: timeout adalah
-    penghentian YANG BISA DIPULIHKAN, jadi dengan RTH aktif drone terbang
-    pulang, bukan mendarat di tempat.
+    Time limit of the FLYING phase. Unlike the battery, a timeout is a
+    RECOVERABLE stop, so with RTH on the drone flies home instead of
+    landing in place.
 
 
-6. PULANG KE HOME
+6. RETURN TO HOME
 ------------------------------------------------------------
 rth_after_goal:=true      default false
-    Setelah goal TERCAPAI, drone juga pulang dan mendarat di home. Tanpa
-    ini drone mendarat di goal. Menambah kira-kira goal_dist / 0.3 detik
-    waktu terbang.
+    After the goal is REACHED the drone also flies home and lands there.
+    Without it the drone lands at the goal. Adds roughly goal_dist / 0.3
+    seconds of flight time.
 
 rth_mode:=replan          default trail
-    trail  = mundur menyusuri remah jejak yang direkam tiap 0.3 m.
-    replan = jalan pulang DIRENCANAKAN ULANG oleh planner FM (loop yang
-             sama dengan perjalanan pergi), dan hidung diputar menghadap
-             home (perbaikan RTHYAW 9/16).
-    Penghentian oleh RC / link loss / Kill tetap menghentikan setpoint
-    seketika, tidak ada RTH.
+    trail  = fly backwards along the breadcrumb trail recorded every 0.3 m.
+    replan = the way home is REPLANNED by the FM planner (the same loop
+             as the outbound leg), and the nose turns toward home
+             (RTHYAW fix, 9/16).
+    A stop by RC / link loss / kill still stops the setpoints at once;
+    no RTH.
 
 
-7. TAMPILAN & KESELAMATAN
+7. DISPLAY & SAFETY
 ------------------------------------------------------------
 flying_yaw_mode:=smooth   default home
-    home     = hidung TERKUNCI ke arah goal sepanjang FLYING. Ini sebabnya
-               yaw tidak pernah berubah pada seluruh 20 penerbangan
-               9/15-9/16 (terukur 62-71 deg pada 9/16 14:14).
-               Saat RETURN (rth_mode:=replan): berputar SEKALI menghadap
-               home, lalu terkunci ke arah itu sampai tiba.
-    smooth   = hidung mengikuti arah jalur: dilembutkan (tau 1.5 s),
-               dibatasi +-60 deg dari arah goal, laju <= 30 deg/s,
-               deadband 15 deg, diam kalau kecepatan < 0.05 m/s.
-               Saat RETURN (rth_mode:=replan) hidung langsung berputar
-               menghadap home dengan 30 deg/s walaupun drone pelan/diam.
-               (YAWFIX 9/30: dulu tau 1.0 dan min 0.15 m/s -> hidung
-               hampir tidak pernah bergerak, dan pada 9/23 17:19 RETURN
-               terbang 80 s dengan hidung miring 60 deg dari home.)
-               Lebih tenang: yaw_smooth_tau_s:=2.0 | lebih cepat: 1.0
-    velocity = perilaku lama; membuat drone berputar di tempat (9/15
-               00:53). Jangan dipakai.
-    Penyetelan: yaw_rate_max_dps, yaw_deadband_deg, yaw_smooth_tau_s,
+    home     = nose LOCKED toward the goal during FLYING. This is why the
+               yaw never changed in all 20 flights on 9/15-9/16
+               (62-71 deg measured on 9/16 14:14).
+               On RETURN (rth_mode:=replan): turns ONCE to face home,
+               then stays locked in that direction until arrival.
+    smooth   = nose follows the path direction: smoothed (tau 1.5 s),
+               limited to +-60 deg from the goal direction, rate
+               <= 30 deg/s, deadband 15 deg, holds when the speed is
+               < 0.05 m/s.
+               On RETURN (rth_mode:=replan) the nose turns to face home
+               at 30 deg/s right away, even when slow or hovering.
+               (YAWFIX 9/30: before, tau 1.0 and min 0.15 m/s -> the nose
+               almost never moved, and on 9/23 17:19 RETURN flew 80 s
+               with the nose 60 deg off home.)
+               Calmer: yaw_smooth_tau_s:=2.0 | faster: 1.0
+    velocity = old behaviour; makes the drone spin in place (9/15
+               00:53). Do not use.
+    Tuning: yaw_rate_max_dps, yaw_deadband_deg, yaw_smooth_tau_s,
     yaw_max_offset_deg, yaw_min_speed.
-    smooth dipakai terbang sekali (9/23 17:19, sebelum YAWFIX); versi
-    YAWFIX belum pernah terbang - jalankan dry_run dulu.
+    smooth flew once (9/23 17:19, before YAWFIX); the YAWFIX version has
+    never flown - run a dry run first.
 
 view_map:=false           default false
-    Tidak menggambar peta ASCII di terminal.
+    Do not print the ASCII map in the terminal.
 
 dry_run:=true             default true
-    true  = TIDAK arming, TIDAK mengirim setpoint sama sekali.
-    false = terbang sungguhan.
+    true  = does NOT arm, sends NO setpoints at all.
+    false = real flight.
 
 
-8. YANG HARUS TERLIHAT DI BANNER SAAT DRY RUN
+8. WHAT THE BANNER MUST SHOW IN A DRY RUN
 ------------------------------------------------------------
     Backend       : FM TensorRT (GPU) K=8
     Replan cost   : candidates 1 | budget 1.0 s | OPENBLAS_NUM_THREADS=1
@@ -212,38 +216,39 @@ dry_run:=true             default true
     Guard mode    : OFF (no guards/escape)
     [BARO] baro_gain=0: NO barometric loop
     [RTH] rth_mode=replan ... rth_after_goal:=true
-  dan TIDAK ada blok peta ASCII.
+  and NO ASCII map block.
 
-  Kalau tertulis "HOME yaw locked", argumen flying_yaw_mode tidak terbaca:
-  periksa ejaan dan pastikan sudah source ~/drone_ws/install/setup.bash.
+  If it says "HOME yaw locked", the flying_yaw_mode argument was not
+  read: check the spelling and that ~/drone_ws/install/setup.bash is
+  sourced.
 
-  Dengan keep_octomap:=true (bagian 9) ada juga:
+  With keep_octomap:=true (section 9) there is also:
     Octomap       : KEPT from takeoff (keep_octomap:=true) — wiped once
                     pre-ARM only; NO wipe at HOVER->FLYING or after
                     failed replans
-  Tanpa opsi itu tertulis "Octomap : wiped pre-ARM, at HOVER->FLYING and
-  after 8 failed replans (keep_octomap:=false)".
+  Without it: "Octomap : wiped pre-ARM, at HOVER->FLYING and after
+  8 failed replans (keep_octomap:=false)".
 
 
-9. OCTOMAP TIDAK DIHAPUS SEJAK TAKEOFF (keep_octomap)     [KEEPMAP 10/02]
+9. OCTOMAP NOT WIPED AFTER TAKEOFF (keep_octomap)        [KEEPMAP 10/02]
 ------------------------------------------------------------
 keep_octomap:=true        default false
-    Perilaku lama: octomap DIHAPUS sampai 3 kali per penerbangan
-      a. sebelum ARM, saat pita ketinggian diset   -> tetap dihapus
-      b. akhir HOVER, tepat sebelum FLYING          -> TIDAK lagi
-      c. saat FLYING / RETURN, tiap 8 replan gagal
-         berturut-turut ("wiping a likely STALE map",
-         paling cepat sekali per 20 s)              -> TIDAK lagi
-    Contoh nyata, bag 9/30 17:52 (/octomap_binary): peta jatuh ke
-    kosong (48 byte) pada t=55 s (a), t=75 s (b) dan t=118 s (c).
+    Old behaviour: the octomap is WIPED up to 3 times per flight
+      a. before ARM, when the height band is set    -> still wiped
+      b. end of HOVER, right before FLYING           -> NO longer
+      c. during FLYING / RETURN, after every 8
+         consecutive failed replans ("wiping a likely
+         STALE map", at most once per 20 s)          -> NO longer
+    Real example, bag 9/30 17:52 (/octomap_binary): the map dropped to
+    empty (48 bytes) at t=55 s (a), t=75 s (b) and t=118 s (c).
 
-    Dengan keep_octomap:=true hanya (a) yang tersisa: peta berisi semua
-    yang terlihat sejak beberapa detik sebelum lepas landas, lalu
-    takeoff, hover, flying sampai RETURN. (a) sengaja dipertahankan
-    supaya data selama menunggu GPS/EKF di darat (orang yang berdiri
-    di dekat drone, dll.) tidak ikut masuk peta.
+    With keep_octomap:=true only (a) remains: the map holds everything
+    seen from a few seconds before takeoff, through takeoff, hover and
+    flying until RETURN. (a) is kept on purpose so that data from waiting
+    for GPS/EKF on the ground (people standing next to the drone, etc.)
+    does not end up in the map.
 
-    Yang terlihat di terminal:
+    In the terminal:
       HOVER : octomap KEPT (keep_octomap:=true) — the map from
               takeoff + hover stays, no wipe
       FLYING: [MAP] 8 replans failed — stale-map wipe SKIPPED #1
@@ -251,116 +256,114 @@ keep_octomap:=true        default false
       DONE  : [REAL] Octomap kept for the whole flight
               (keep_octomap:=true): N stale-map wipe(s) skipped
 
-    KONSEKUENSI: (c) adalah pemulihan untuk "voxel hantu" (titik salah
-    yang menempel di peta dan tidak terlihat lagi oleh kamera). Tanpa
-    (c), replan bisa terus gagal di dekat voxel hantu; drone menahan
-    posisi sampai mission_timeout_s lalu RTH / mendarat seperti biasa.
-    Penghindaran terhadap rintangan yang ADA di peta tidak berkurang,
-    tetapi misi bisa macet. Untuk penerbangan biasa biarkan default.
+    CONSEQUENCE: (c) is the recovery for "ghost voxels" (false points
+    stuck in the map that the camera never sees again). Without (c),
+    replans can keep failing near a ghost voxel; the drone holds position
+    until mission_timeout_s, then RTH / lands as usual. Avoidance of
+    obstacles that ARE in the map is not reduced, but the mission can
+    get stuck. For normal flights leave the default.
 
-    dry_run:=true tidak punya takeoff/HOVER, jadi di sana hanya (c)
-    yang berbeda.
+    dry_run:=true has no takeoff/HOVER, so there only (c) differs.
 
-    Melihat peta (butuh record_map:=true publish_3d_map:=true):
-      - bag di ~/flight_maps/map_<waktu>/ ; pesan /octomap_full yang
-        TERAKHIR = peta lengkap satu penerbangan.
-      - putar ulang:  ros2 bag play ~/flight_maps/map_<waktu>
+    Viewing the map (needs record_map:=true publish_3d_map:=true):
+      - bag in ~/flight_maps/map_<time>/ ; the LAST /octomap_full
+        message = the full map of one flight.
+      - replay:  ros2 bag play ~/flight_maps/map_<time>
         RViz2: Fixed Frame = odom, Add -> octomap_rviz_plugins/
-        OccupancyGrid topic /octomap_full (3D), dan Map topic
-        /projected_map (peta 2D yang dipakai planner).
-      - simpan ke file selama launch MASIH jalan (sebelum Ctrl-C):
+        OccupancyGrid topic /octomap_full (3D), and Map topic
+        /projected_map (the 2D map the planner uses).
+      - save to a file while the launch is STILL running (before Ctrl-C):
           ros2 run octomap_server octomap_saver_node --ros-args \
-              -p octomap_path:=$HOME/flight_maps/peta.bt
-        (.ot + "-p full:=true" untuk peta full). Diuji 10/02.
-    Bag lama juga berisi bagian takeoff + hover, tetapi hanya sampai
-    detik (b): putar bag dan lihat pesan sebelum detik itu.
+              -p octomap_path:=$HOME/flight_maps/map.bt
+        (.ot + "-p full:=true" for the full map). Tested 10/02.
+    Older bags also contain takeoff + hover, but only up to moment (b):
+    play the bag and look at the messages before that moment.
 
 
-10. FILTER KONFIRMASI VOXEL UNTUK OCTOMAP (confirm_hits)  [VOXCONF 10/06]
+10. VOXEL CONFIRMATION FILTER FOR OCTOMAP (confirm_hits)  [VOXCONF 10/06]
 ------------------------------------------------------------
-confirm_hits:=2           default 1 (= mati, perilaku lama)
+confirm_hits:=2           default 1 (= off, old behaviour)
 confirm_window_s:=2.0     default 2.0
 
-    Masalah (bag 10/06, lima penerbangan saat gerimis): octomap menandai
-    voxel "terisi" sejak tembakan PERTAMA, titik di luar max_range
-    dibuang sebelum octomap (tidak ada sinar yang membersihkan sisi
-    jauh), dan keep_octomap:=true mematikan penghapusan peta. Bintik
-    depth yang muncul di SATU frame jadi menempel sampai mendarat.
-    61-71 % voxel terisi di pita planner hanya kena sekali, kebanyakan
-    lahir 3,3-4 m di depan hidung, dan bersama-sama menutup jalan ke
-    goal. Bukan hanya saat hujan: penerbangan senja 9/30 juga begitu.
+    Problem (10/06 bags, five flights in light rain): octomap marks a
+    voxel "occupied" from the FIRST hit, points beyond max_range are
+    dropped before octomap (no ray clears the far side), and
+    keep_octomap:=true turns off map wiping. A depth speck seen in ONE
+    frame stays until landing. 61-71 % of occupied voxels in the planner
+    band were hit only once, most born 3.3-4 m ahead of the nose, and
+    together they blocked the way to the goal. Not only in rain: the
+    9/30 dusk flight was the same.
 
-    Dengan confirm_hits:=2, sebuah titik depth baru diteruskan ke
-    octomap kalau voxel 15 cm tempat titik itu jatuh (frame odom, grid
-    yang sama dengan octomap) sudah kena di 2 frame berbeda dalam
-    confirm_window_s detik. Voxel yang sudah lolos tetap diterima selama
-    masih terlihat (60 s). Yang disaring HANYA awan titik untuk octomap
-    (/realsense/depth/points); gambar depth untuk model FM tidak
-    disentuh.
+    With confirm_hits:=2, a new depth point is passed to octomap only if
+    the 15 cm voxel it falls in (odom frame, same grid as octomap) was
+    hit in 2 different frames within confirm_window_s seconds. A voxel
+    that passed stays accepted while it keeps being seen (60 s). ONLY the
+    point cloud for octomap (/realsense/depth/points) is filtered; the
+    depth image for the FM model is untouched.
 
-    Hasil uji (riwayat hit 6 penerbangan rekaman diputar lewat kode
-    yang sama, 2 hit / 2,0 s):
-      voxel sekali-kena hilang        96 %
-      voxel rintangan asli bertahan   99,6 %
-      ada rute ke goal                37 dari 37 momen (peta asli: 29)
-    JANGAN pakai confirm_hits:=3 : 5-15 % voxel rintangan asli ikut
-    hilang. Jendela 1,0 s juga boleh (98,4 % bertahan), noise-nya sama.
+    Test results (hit history of 6 recorded flights replayed through the
+    same code, 2 hits / 2.0 s):
+      single-hit voxels removed       96 %
+      real obstacle voxels kept       99.6 %
+      route to the goal open          37 of 37 moments (raw map: 29)
+    DO NOT use confirm_hits:=3 : 5-15 % of real obstacle voxels are lost
+    too. A 1.0 s window is also fine (98.4 % kept), same noise removal.
 
-    Yang terlihat di terminal:
+    In the terminal:
       voxel confirmation ON: a point reaches octomap once its 0.15 m
           voxel (odom) was hit in >= 2 frames within 2.0 s | ...
       [CONFIRM] 10.0 s: 97 frames (9.7 Hz) | N points in -> M to
           octomap, K held back (2.1 %) | accepted voxels ... |
           filter 3.1 ms/frame | TF age 20 ms | unfiltered frames:
-          0 bypassed, 0 after a pause          (satu baris per 10 s)
-    Tanpa opsi ini tertulis "voxel confirmation OFF (confirm_hits < 2)
+          0 bypassed, 0 after a pause          (one line per 10 s)
+    Without the option: "voxel confirmation OFF (confirm_hits < 2)
     — every point goes to octomap".
 
     "[CONFIRM] filter bypassed, all N points of this frame go to
-    octomap: ..." = untuk frame itu filter TIDAK bekerja (TF odom <-
-    kamera hilang atau lebih tua dari 0,5 s, error, atau hampir semua
-    titik awan besar ditolak selama 2 s) dan semua titik dikirim
-    seperti perilaku lama. Filter hanya bisa MEMBUANG titik; ia tidak
-    pernah menghentikan awan titik. Sesekali tidak apa-apa; kalau
-    terus-menerus periksa MAVROS / mavros_tf_broadcaster.
-    "after a pause" = frame pertama setelah jeda > confirm_window_s
-    (belum ada pembanding) juga dikirim utuh.
+    octomap: ..." = for that frame the filter did NOT run (TF odom <-
+    camera missing or older than 0.5 s, an error, or almost every point
+    of a large cloud rejected for 2 s) and all points were sent as in
+    the old behaviour. The filter can only DROP points; it never stops
+    the point cloud. Occasionally is fine; if it keeps happening, check
+    MAVROS / mavros_tf_broadcaster.
+    "after a pause" = the first frame after a gap > confirm_window_s
+    (nothing to compare with yet) is also sent whole.
 
-    KONSEKUENSI:
-      - rintangan asli masuk peta sedikit lebih lambat: 1 frame
-        (~0,1 s) kalau terlihat terus-menerus; di data rekaman median
-        0,3-1,1 s per voxel, dan drone paling banyak 0,18 m lebih
-        dekat ke rintangan saat voxel pertamanya masuk peta
-      - benda yang hanya sesekali tertangkap kamera (ranting tipis,
-        kabel, tepi jangkauan) TIDAK masuk peta sampai terlihat 2 kali
-        dalam 2 s
-      - sinar dari titik yang ditahan tidak menandai ruang "bebas",
-        jadi sel "unknown" lebih banyak. Planner tidak terpengaruh
-        (unknown = bebas), tetapi kalau guard dinyalakan lagi
-        (use_lookahead_guard, blind_abort_s) harus diuji dulu
-      - noise yang kena voxel yang sama 2 kali dalam 2 s tetap lolos
+    CONSEQUENCES:
+      - real obstacles enter the map slightly later: 1 frame (~0.1 s)
+        when seen continuously; in the recorded data the median was
+        0.3-1.1 s per voxel, and the drone was at most 0.18 m closer to
+        the obstacle when its first voxel entered the map
+      - things the camera catches only now and then (thin branches,
+        wires, the edge of the range) do NOT enter the map until seen
+        twice within 2 s
+      - rays from held-back points do not mark "free" space, so there
+        are more "unknown" cells. The planner is not affected
+        (unknown = free), but if the guards are turned on again
+        (use_lookahead_guard, blind_abort_s) test that first
+      - noise that hits the same voxel twice within 2 s still passes
 
-    Dengan filter menyala, node depth_to_pointcloud juga memakai jalur
-    cepat untuk mengisi pesan awan titik (7-13 ms per frame, sebelumnya
-    30 ms untuk 13 ribu titik dan 107 ms untuk 53 ribu titik). Isi
-    pesannya sama byte demi byte.
+    With the filter on, depth_to_pointcloud also uses a fast path to fill
+    the point-cloud message (7-13 ms per frame, before 30 ms for 13k
+    points and 107 ms for 53k points). The message content is identical
+    byte for byte.
 
-    Rekaman (record_map:=true): bag sekarang juga berisi
-      /realsense/depth/points_rejected   titik yang ditahan filter
-      /realsense/depth/confirm_status    hitungan filter, 1 Hz (JSON)
+    Recording (record_map:=true): the bag now also contains
+      /realsense/depth/points_rejected   points held back by the filter
+      /realsense/depth/confirm_status    filter counts, 1 Hz (JSON)
     RViz2: Add -> PointCloud2, topic /realsense/depth/points_rejected,
-    Fixed Frame odom -> terlihat APA yang dibuang filter.
-    Untuk merekam awan titik lengkap (mencoba setelan lain secara
-    offline), jalankan di terminal kedua selama launch hidup:
+    Fixed Frame odom -> shows WHAT the filter dropped.
+    To record the full point cloud (to try other settings offline), run
+    in a second terminal while the launch is running:
       ros2 bag record -o ~/flight_maps/cloud_$(date +%H%M%S) \
           /realsense/depth/points /realsense/depth/points_rejected \
           /tf /tf_static
-    (kira-kira 2 MB/s; awan asli = points + points_rejected).
+    (about 2 MB/s; full cloud = points + points_rejected).
 
-    Alternatif tanpa filter: max_range:=3.0 (semua titik > 3 m dibuang,
-    berlaku untuk depth_to_pointcloud dan octomap). Di simulasi data
-    yang sama rute ke goal juga terbuka, tetapi rintangan baru terlihat
-    1 m lebih dekat. Boleh digabung dengan confirm_hits:=2.
+    Alternative without the filter: max_range:=3.0 (every point > 3 m is
+    dropped, applies to depth_to_pointcloud and octomap). In the replay
+    of the same data the route to the goal also opened, but new obstacles
+    are seen 1 m later. Can be combined with confirm_hits:=2.
 
-    Tes offline (tanpa MAVROS, tanpa arming):
+    Offline test (no MAVROS, no arming):
       /usr/bin/python3 src/fm_deploy/test/offline_test_voxconf.py

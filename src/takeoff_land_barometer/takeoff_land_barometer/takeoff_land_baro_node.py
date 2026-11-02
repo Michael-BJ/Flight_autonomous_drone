@@ -88,9 +88,9 @@ class TakeoffLandBaroMixin(BaroHoldMixin):
             alt = self._baro_alt()
             alt_t = float(target_z) - self._ground_z
             if abs(alt - alt_t) > self._max_alt_error:
-                self._sanity_abort(
-                    f"Altitude deviation: baro alt={alt:.2f}m target={alt_t:.2f}m "
-                    f"(limit ±{self._max_alt_error:.1f}m)")
+                self._sanity_abort(   # HFLOWALT: source name in the message
+                    f"Altitude deviation: {self._alt_source_name()} alt={alt:.2f}m "
+                    f"target={alt_t:.2f}m (limit ±{self._max_alt_error:.1f}m)")
                 return False
         return True
 
@@ -104,10 +104,12 @@ class TakeoffLandBaroMixin(BaroHoldMixin):
                 f"[{self._elapsed()}] {self._phase_name} — waiting for "
                 "/px4/state (px4_sensor_reader & MAVROS)...")
             return
-        alt, mode = self._baro.altitude()
         ekf_alt = float(self._pos[2]) - self._ground_z
-        parts = [f"balt={alt:5.2f}m({mode})", f"ekf_alt={ekf_alt:5.2f}m",
+        parts = [self._alt_status_part(), f"ekf_alt={ekf_alt:5.2f}m",   # HFLOWALT
                  f"z={float(self._pos[2]):6.2f}m", f"vz={float(self._vel[2]):+5.2f}"]
+        hf = self._hflow_status_part()   # NEW (2026-10-19, HFLOWALT)
+        if hf:
+            parts.insert(1, hf)
         if self._home_x or self._home_y:
             d_home = math.sqrt((float(self._pos[0]) - self._home_x) ** 2
                                + (float(self._pos[1]) - self._home_y) ** 2)

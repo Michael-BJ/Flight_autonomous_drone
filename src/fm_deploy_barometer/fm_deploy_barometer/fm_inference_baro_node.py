@@ -98,8 +98,8 @@ class FMInferenceBaroNode(BaroHoldMixin, ReturnHomeRecoveryMixin, FMInferenceRea
             alt_t = float(self._cruise_z) - self._ground_z
             dz = abs(alt - alt_t)
             if dz > self._baro_max_alt_err:
-                self._abort_reason = (
-                    f"ALTITUDE deviated {dz:.2f} m from cruise (barometric "
+                self._abort_reason = (   # HFLOWALT: source name in the message
+                    f"ALTITUDE deviated {dz:.2f} m from cruise ({self._alt_source_name()} "
                     f"{alt:.2f} vs {alt_t:.2f} m, limit {self._baro_max_alt_err:.2f} m)")
                 return
         prob = self._baro_health_problem()
@@ -144,9 +144,11 @@ class FMInferenceBaroNode(BaroHoldMixin, ReturnHomeRecoveryMixin, FMInferenceRea
         rst   = self._c("reset")
         bold  = self._c("bold")
 
-        alt, bmode = self._baro.altitude()
-        parts = [f"balt={alt:5.2f}m({bmode})",
+        parts = [self._alt_status_part(),   # HFLOWALT
                  f"ekf_alt={float(pos[2]) - self._ground_z:5.2f}m"]
+        hf = self._hflow_status_part()   # NEW (2026-10-19, HFLOWALT)
+        if hf:
+            parts.insert(1, hf)
         if self._home_locked:
             d_home = float(np.linalg.norm(pos[:2] - self._home_xy))
             fence = ""

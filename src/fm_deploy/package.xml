@@ -3,7 +3,7 @@
 <package format="3">
   <name>fm_deploy</name>
   <version>1.0.0</version>
-  <description>FM-Planner inference on real hardware (Jetson Orin Nano + PX4/MAVROS + Orbbec Gemini 2). Perencana identik dengan versi simulasi; tambahan hanya lapisan keselamatan hardware.</description>
+  <description>FM-Planner inference on real hardware (Jetson Orin Nano + PX4/MAVROS + Orbbec Gemini 2). The planner is identical to the simulation version; only a hardware safety layer is added.</description>
   <maintainer email="michaelbryanjahanto@gmail.com">michael</maintainer>
   <license>TODO: License declaration</license>
 

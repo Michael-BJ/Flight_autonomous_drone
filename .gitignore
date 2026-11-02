@@ -1,7 +1,7 @@
-# ── Hasil build colcon (bukan sumber) ────────────────────────────────────
-# Catatan: build/takeoff_land dan install/takeoff_land terlanjur dilacak
-# git sebelum berkas ini ada. Sengaja TIDAK dikeluarkan dari index supaya
-# `git pull` rekan kerja tidak menghapus direktori kerja mereka.
+# ── colcon build output (not source) ─────────────────────────────────────
+# Note: build/takeoff_land and install/takeoff_land were already tracked
+# before this file existed. They are deliberately NOT removed from the index,
+# so that a partner's `git pull` does not delete their working directories.
 build/
 install/
 log/
@@ -11,19 +11,19 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# ── Cadangan sebelum mengubah program (konvensi workspace ini) ───────────
-# Pola: <nama>.bak-<label>-<waktu>. Riwayatnya sudah ada di git.
+# ── Backups made before editing (this workspace's convention) ────────────
+# Pattern: <name>.bak-<label>-<time>. The history is already in git.
 *.bak-*
 *.bak
 
-# ── Model (besar, dan .engine hanya jalan di TensorRT + GPU Jetson ini) ──
+# ── Models (large; an .engine only runs on this Jetson's TensorRT + GPU) ─
 # fm_planner_*.engine 72 MB, *_trt.onnx 44 MB, model/fm/neo/ 123 MB.
-# Kalau perlu diversikan, pakai Git LFS, bukan git biasa.
+# If they need versioning, use Git LFS, not plain git.
 src/fm_deploy/model/
 *.engine
 *.pth
 
-# ── Log penerbangan & arsip ──────────────────────────────────────────────
+# ── Flight logs & archives ───────────────────────────────────────────────
 *.ulg
 *.zip
 

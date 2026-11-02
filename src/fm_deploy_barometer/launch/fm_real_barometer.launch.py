@@ -35,6 +35,8 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from takeoff_land_barometer.launch_common import (   # NEW (2026-10-19, HFLOWALT)
+    hflow_arguments, hflow_parameters)
 
 # Same default as fm_deploy (TensorRT engine, automatic .onnx/CPU fallback).
 _DEFAULT_MODEL_PATH = os.path.expanduser(
@@ -161,6 +163,8 @@ def generate_launch_description():
             "band_drift_margin", default_value="0.5",
             description="BARO: octomap band widened UPWARD by this (m) to "
                         "tolerate EKF drift during the flight."),
+        # ── H-Flow altitude (see hflow_altitude.py) ──── NEW (2026-10-19, HFLOWALT)
+        *hflow_arguments(),
 
         # ── BARO: return-along-the-flown-path recovery (see recovery.py) ─────
         DeclareLaunchArgument(
@@ -433,6 +437,7 @@ def generate_launch_description():
             "baro_gate_drift":     _f("baro_gate_drift"),
             "baro_min_rate_hz":    _f("baro_min_rate_hz"),
             "band_drift_margin":   _f("band_drift_margin"),
+            **hflow_parameters(),   # NEW (2026-10-19, HFLOWALT)
             # BARO: return recovery
             "rth_enabled":         _b("rth_enabled"),
             "rth_speed":           _f("rth_speed"),
